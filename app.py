@@ -1,73 +1,65 @@
-import random
-import requests
-from bs4 import BeautifulSoup
 import streamlit as st
+import requests
+import random
+from bs4 import BeautifulSoup
 
-# Functie om titels en IMDb-IDs op te halen
-@st.cache_data(show_spinner="Titels worden opgehaald...")
-def fetch_imdb_titles_simple(imdb_list_url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(imdb_list_url, headers=headers, timeout=10)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    titles = []
+OMDB_API_KEY = "672ca221"  # Vervang eventueel met je eigen key
 
-    for item in soup.select('.lister-item'):
-        header = item.select_one('.lister-item-header a')
-        if header:
-            title = header.text.strip()
-            href = header['href']
-            # IMDb ID extraheren uit de link, bv: /title/tt1234567/
-            imdb_id = href.split('/')[2]
-            titles.append({'title': title, 'id': imdb_id})
+def get_movie_data(imdb_id):
+    url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    return {}
 
-    return titles
-
-# Poster ophalen
 def get_poster(imdb_id):
     try:
         url = f"https://www.imdb.com/title/{imdb_id}/"
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
-        meta = soup.find('meta', property='og:image')
-        if meta and meta.get('content'):
-            return meta['content']
+        meta = soup.find("meta", property="og:image")
+        return meta["content"] if meta else None
     except:
-        pass
+        return None
+
+def find_trailer_on_youtube(title, year):
+    query = f"{title} {year} trailer"
+    search_url = f"https://www.youtube.com/results?search_query={requests.utils.quote(query)}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    res = requests.get(search_url, headers=headers)
+    soup = BeautifulSoup(res.text, "html.parser")
+    for link in soup.find_all("a"):
+        href = link.get("href", "")
+        if "/watch?v=" in href:
+            return f"https://www.youtube.com{href}"
     return None
 
-# Rating ophalen via OMDb API
-def get_imdb_rating(imdb_id):
-    api_key = "672ca221"  # Vervang met je eigen API key indien nodig
-    url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={api_key}"
-    try:
-        r = requests.get(url, timeout=10).json()
-        return r.get("imdbRating", "N/A")
-    except:
-        return "N/A"
+st.set_page_config(page_title="🎞️ IMDb Picker via Upload", layout="centered")
+st.title("🎬 IMDb Random Picker (via upload)")
+st.markdown("Upload een bestand (.txt of .csv) met IMDb ID’s (bv. `tt0111161`)")
 
-# Streamlit UI
-st.set_page_config(page_title="IMDb Picker", layout="centered")
-st.title("🎬 IMDb Random Picker")
+uploaded_file = st.file_uploader("📤 Upload je lijst", type=["txt", "csv"])
 
-imdb_url = st.text_input("Plak hier je IMDb Watchlist of andere lijst-URL:")
+if uploaded_file:
+    imdb_ids = [line.strip() for line in uploaded_file.readlines()]
+    imdb_ids = [id.decode("utf-8") if isinstance(id, bytes) else id for id in imdb_ids]
+    imdb_ids = [id for id in imdb_ids if id.startswith("tt")]
 
-if st.button("🎲 Kies een willekeurige titel"):
-    with st.spinner("Lijst wordt opgehaald..."):
-        titles = fetch_imdb_titles_simple(imdb_url)
+    if not imdb_ids:
+        st.warning("Geen geldige IMDb ID’s gevonden.")
+    elif st.button("🎲 Kies een willekeurige titel"):
+        chosen_id = random.choice(imdb_ids)
+        movie_data = get_movie_data(chosen_id)
+        poster_url = get_poster(chosen_id)
+        trailer_url = find_trailer_on_youtube(movie_data.get("Title", ""), movie_data.get("Year", ""))
 
-    if not titles:
-        st.error("Geen titels gevonden! Zorg dat je een publieke IMDb-lijst gebruikt.")
-    else:
-        choice = random.choice(titles)
-        title = choice['title']
-        imdb_id = choice['id']
-        poster_url = get_poster(imdb_id)
-        rating = get_imdb_rating(imdb_id)
+        st.subheader(f"{movie_data.get('Title')} ({movie_data.get('Year')})")
+        st.markdown(f"⭐ IMDb Rating: **{movie_data.get('imdbRating', 'N/A')}**")
+        st.markdown(f"[🔗 IMDb Link](https://www.imdb.com/title/{chosen_id}/)")
 
-        st.subheader(title)
-        st.markdown(f"⭐ IMDb Rating: **{rating}**")
-        st.markdown(f"[🔗 Bekijk op IMDb](https://www.imdb.com/title/{imdb_id}/)")
+        if trailer_url:
+            st.markdown(f"[🎥 Bekijk trailer]({trailer_url})")
 
         if poster_url:
             st.image(poster_url, width=300)
