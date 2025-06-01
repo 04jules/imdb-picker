@@ -1,21 +1,51 @@
 import streamlit as st
+import pandas as pd
 import requests
 import random
-import pandas as pd
-from bs4 import BeautifulSoup
 import re
+from bs4 import BeautifulSoup
+import json
+from jsonpath_ng import jsonpath, parse
+from io import StringIO
 
-# Vervang met je eigen OMDb API key indien nodig
-OMDB_API_KEY = "672ca221"
+# Configuratie
+st.set_page_config(page_title="🎬 IMDb Random Picker", layout="centered")
+OMDB_API_KEY = "672ca221"  # Vervang met je eigen key
 
+# Functies
+@st.cache_data(show_spinner=False)
+def extract_imdb_ids(df):
+    """Extraheer alle unieke IMDb ID's uit een DataFrame"""
+    imdb_ids = set()
+    pattern = re.compile(r'(tt\d{7,8})')  # Vindt tt gevolgd door 7-8 cijfers
+    
+    for col in df.columns:
+        try:
+            # Zoek in elke cel van elke kolom
+            matches = df[col].astype(str).str.extractall(pattern)[0].unique()
+            for match in matches:
+                if pd.notna(match):
+                    imdb_ids.add(match)
+        except Exception as e:
+            continue
+            
+    return list(imdb_ids)
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_movie_data(imdb_id):
-    url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()
-    return {}
+    """Haal filmdata op van OMDB API"""
+    try:
+        url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data if data.get('Response') == 'True' else {}
+    except Exception:
+        return {}
 
-def get_poster(imdb_id):
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_poster_url(imdb_id):
+    """Haal poster URL op van IMDb"""
     try:
         url = f"https://www.imdb.com/title/{imdb_id}/"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -23,61 +53,111 @@ def get_poster(imdb_id):
         soup = BeautifulSoup(response.text, 'html.parser')
         meta = soup.find("meta", property="og:image")
         return meta["content"] if meta else None
-    except:
+    except Exception:
         return None
 
-def find_trailer_on_youtube(title, year):
-    query = f"{title} {year} trailer"
-    search_url = f"https://www.youtube.com/results?search_query={requests.utils.quote(query)}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(search_url, headers=headers, timeout=10)
-    soup = BeautifulSoup(res.text, "html.parser")
-    for link in soup.find_all("a"):
-        href = link.get("href", "")
-        if "/watch?v=" in href:
-            return f"https://www.youtube.com{href}"
-    return None
+@st.cache_data(show_spinner=False, ttl=3600)
+def find_youtube_trailer(title, year):
+    """Zoek YouTube trailer URL"""
+    try:
+        query = f"{title} {year} official trailer"
+        search_url = f"https://www.youtube.com/results?search_query={requests.utils.quote(query)}"
+        
+        response = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Moderne YouTube resultaten
+        scripts = soup.find_all("script")
+        for script in scripts:
+            if 'ytInitialData' in script.text:
+                data = json.loads(script.text.split('ytInitialData = ')[1].split(';')[0])
+                jsonpath_expr = parse('$..videoRenderer[0].videoId')
+                matches = [match.value for match in jsonpath_expr.find(data)]
+                if matches:
+                    return f"https://youtube.com/watch?v={matches[0]}"
+        
+        # Fallback voor oudere YouTube versies
+        for link in soup.find_all("a", href=True):
+            if "/watch?v=" in link["href"]:
+                return f"https://youtube.com{link['href']}"
+                
+        return None
+    except Exception:
+        return None
 
-# Streamlit UI configuratie
-st.set_page_config(page_title="🎞️ IMDb Picker via Upload", layout="centered")
-st.title("🎬 IMDb Random Picker (via CSV-upload)")
-st.markdown("Upload een IMDb-export CSV-bestand (bijvoorbeeld `watchlist.csv`) of een andere CSV waarin IMDb ID’s `tt1234567` voorkomen.")
+# UI
+st.title("🎬 IMDb Random Picker")
+st.markdown("""
+Upload een CSV-bestand met IMDb ID's (zoals `tt1234567`).  
+Werkt met IMDb watchlist exports of elke CSV met IMDb ID's.
+""")
 
-uploaded_file = st.file_uploader("📤 Upload je CSV-bestand", type=["csv"])
+# Voorbeeld CSV
+with st.expander("📋 Voorbeeld CSV-formaat"):
+    st.code("""Const,Title,Year
+tt0111161,The Shawshank Redemption,1994
+tt0068646,The Godfather,1972
+tt0071562,The Godfather Part II,1974""")
+
+# Bestand upload
+uploaded_file = st.file_uploader("📤 Upload CSV-bestand", type=["csv"])
 
 if uploaded_file:
     try:
-        # Lees de CSV in een DataFrame
-        df = pd.read_csv(uploaded_file)
-        # Zoek naar IMDb ID's in alle kolommen
-        imdb_ids = set()
-        pattern = re.compile(r'^tt\\d+$')
-        for col in df.columns:
-            for val in df[col].astype(str).str.strip():
-                if pattern.match(val):
-                    imdb_ids.add(val)
-        imdb_ids = list(imdb_ids)
+        # Lees CSV (probeer verschillende encodings)
+        try:
+            df = pd.read_csv(uploaded_file)
+        except UnicodeDecodeError:
+            uploaded_file.seek(0)
+            content = uploaded_file.read().decode('latin-1')
+            df = pd.read_csv(StringIO(content))
+        
+        # Extraheer IMDb ID's
+        with st.spinner("🔍 Zoek naar IMDb ID's..."):
+            imdb_ids = extract_imdb_ids(df)
+        
+        if not imdb_ids:
+            st.warning("⚠️ Geen IMDb ID's gevonden. Zorg dat je bestand IDs bevat zoals tt1234567")
+            st.stop()
+            
+        st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
+        
+        if st.button("🎲 Willekeurige film selecteren", type="primary"):
+            with st.spinner("🎥 Filmgegevens ophalen..."):
+                chosen_id = random.choice(imdb_ids)
+                movie = get_movie_data(chosen_id)
+                poster_url = get_poster_url(chosen_id)
+                
+                if not movie:
+                    st.error("Kon filmgegevens niet ophalen van OMDB")
+                    st.stop()
+                
+                # Toon resultaten
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    if poster_url:
+                        st.image(poster_url, width=200)
+                    else:
+                        st.warning("Geen poster beschikbaar")
+                
+                with col2:
+                    st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
+                    st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
+                    st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
+                    st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
+                    
+                    # IMDb link
+                    imdb_url = f"https://www.imdb.com/title/{chosen_id}/"
+                    st.markdown(f"[🔗 IMDb pagina]({imdb_url})")
+                    
+                    # YouTube trailer
+                    trailer_url = find_youtube_trailer(movie['Title'], movie['Year'])
+                    if trailer_url:
+                        st.markdown(f"[🎥 Bekijk trailer]({trailer_url})")
+                    
+                    # Plot
+                    st.markdown(f"**📖 Verhaal:**  \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
+    
     except Exception as e:
-        st.error(f"Fout bij inlezen van bestand: {e}")
-        imdb_ids = []
-
-    if not imdb_ids:
-        st.warning("Geen geldige IMDb ID’s gevonden in je upload. Zorg dat er strings als 'tt0123456' in de CSV staan.")
-    elif st.button("🎲 Kies een willekeurige titel"):
-        chosen_id = random.choice(imdb_ids)
-        movie_data = get_movie_data(chosen_id)
-        title = movie_data.get("Title", "Onbekende titel")
-        year = movie_data.get("Year", "")
-        rating = movie_data.get("imdbRating", "N/A")
-        poster_url = get_poster(chosen_id)
-        trailer_url = find_trailer_on_youtube(title, year)
-
-        st.subheader(f"{title} ({year})")
-        st.markdown(f"⭐ IMDb Rating: **{rating}**")
-        st.markdown(f"[🔗 IMDb Link](https://www.imdb.com/title/{chosen_id}/)")
-
-        if trailer_url:
-            st.markdown(f"[🎥 Bekijk trailer]({trailer_url})")
-
-        if poster_url:
-            st.image(poster_url, width=300)
+        st.error(f"❌ Fout bij verwerken bestand: {str(e)}")
