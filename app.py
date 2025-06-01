@@ -44,6 +44,38 @@ def get_movie_data(imdb_id):
         return {}
 
 @st.cache_data(show_spinner=False, ttl=3600)
+def get_imdb_details(imdb_id):
+    """Haal extra details op van IMDb pagina"""
+    try:
+        url = f"https://www.imdb.com/title/{imdb_id}/"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Regisseur ophalen
+        director = "Onbekend"
+        director_section = soup.find('li', {'data-testid': 'title-pc-principal-credit'})
+        if director_section:
+            director = director_section.get_text(strip=True).replace('Director', '')
+        
+        # Top cast ophalen (eerste 5 acteurs)
+        cast = []
+        cast_section = soup.find('div', {'data-testid': 'title-cast'})
+        if cast_section:
+            cast_items = cast_section.find_all('a', {'data-testid': 'title-cast-item__actor'}, limit=5)
+            cast = [item.get_text(strip=True) for item in cast_items]
+        
+        return {
+            'director': director,
+            'cast': cast if cast else ["Geen cast informatie beschikbaar"]
+        }
+    except Exception:
+        return {
+            'director': "Kon regisseur niet ophalen",
+            'cast': ["Kon cast niet ophalen"]
+        }
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_poster_url(imdb_id):
     """Haal poster URL op van IMDb"""
     try:
@@ -126,6 +158,7 @@ if uploaded_file:
             with st.spinner("🎥 Filmgegevens ophalen..."):
                 chosen_id = random.choice(imdb_ids)
                 movie = get_movie_data(chosen_id)
+                imdb_details = get_imdb_details(chosen_id)
                 poster_url = get_poster_url(chosen_id)
                 
                 if not movie:
@@ -143,6 +176,13 @@ if uploaded_file:
                 
                 with col2:
                     st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
+                    st.markdown(f"**🎬 Regisseur:** {imdb_details['director']}")
+                    
+                    # Toon top cast
+                    st.markdown("**🌟 Hoofdrolspelers:**")
+                    for actor in imdb_details['cast']:
+                        st.markdown(f"- {actor}")
+                    
                     st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
                     st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
                     st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
