@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
 import random
+import pandas as pd
 from bs4 import BeautifulSoup
 
-OMDB_API_KEY = "672ca221"  # Vervang eventueel met je eigen key
+OMDB_API_KEY = "672ca221"  # Vervang dit indien nodig
 
 def get_movie_data(imdb_id):
     url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
@@ -36,18 +37,25 @@ def find_trailer_on_youtube(title, year):
     return None
 
 st.set_page_config(page_title="🎞️ IMDb Picker via Upload", layout="centered")
-st.title("🎬 IMDb Random Picker (via upload)")
-st.markdown("Upload een bestand (.txt of .csv) met IMDb ID’s (bv. `tt0111161`)")
+st.title("🎬 IMDb Random Picker")
+st.markdown("Upload een officiële IMDb CSV-export (zoals `watchlist.csv`)")
 
-uploaded_file = st.file_uploader("📤 Upload je lijst", type=["txt", "csv"])
+uploaded_file = st.file_uploader("📤 Upload je CSV-bestand", type=["csv"])
 
 if uploaded_file:
-    imdb_ids = [line.strip() for line in uploaded_file.readlines()]
-    imdb_ids = [id.decode("utf-8") if isinstance(id, bytes) else id for id in imdb_ids]
-    imdb_ids = [id for id in imdb_ids if id.startswith("tt")]
+    try:
+        df = pd.read_csv(uploaded_file)
+        if 'const' in df.columns:
+            imdb_ids = df['const'].dropna().unique().tolist()
+        else:
+            st.error("Deze CSV bevat geen 'const'-kolom met IMDb ID’s.")
+            imdb_ids = []
+    except Exception as e:
+        st.error(f"Fout bij inlezen van bestand: {e}")
+        imdb_ids = []
 
     if not imdb_ids:
-        st.warning("Geen geldige IMDb ID’s gevonden.")
+        st.warning("Geen geldige IMDb ID’s gevonden in je upload.")
     elif st.button("🎲 Kies een willekeurige titel"):
         chosen_id = random.choice(imdb_ids)
         movie_data = get_movie_data(chosen_id)
