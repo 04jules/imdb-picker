@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import requests
@@ -6,11 +7,10 @@ import re
 from bs4 import BeautifulSoup
 from io import StringIO
 
-# Configuratie
 st.set_page_config(page_title="🎬 IMDb Random Picker", layout="centered")
+
 OMDB_API_KEY = "672ca221"
 
-# Functies
 @st.cache_data(show_spinner=False)
 def extract_imdb_ids(df):
     imdb_ids = set()
@@ -90,7 +90,7 @@ def find_youtube_trailer(title, year):
     except:
         return None
 
-# UI
+# UI start
 st.title("🎬 IMDb Random Picker")
 st.markdown("Upload een CSV-bestand met IMDb ID's (zoals `tt1234567`). Werkt met watchlists of elke CSV met IDs.")
 
@@ -108,49 +108,42 @@ if uploaded_file:
             content = uploaded_file.read().decode('latin-1')
             df = pd.read_csv(StringIO(content))
 
-        with st.spinner("🔍 IMDb ID's worden gezocht..."):
-            imdb_ids = extract_imdb_ids(df)
-
+        imdb_ids = extract_imdb_ids(df)
         if not imdb_ids:
             st.warning("⚠️ Geen IMDb ID's gevonden.")
             st.stop()
-        st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
 
+        st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        with st.spinner("📦 Ophalen metadata van OMDb..."):
-            all_data = []
-            for imdb_id in imdb_ids:
+        if "all_data" not in st.session_state:
+            st.session_state.all_data = []
+            for imdb_id in imdb_ids[:50]:
                 data = get_movie_data(imdb_id)
                 if data:
-                    all_data.append((imdb_id, data))
+                    st.session_state.all_data.append((imdb_id, data))
 
         if media_type == "Alleen films":
-            filtered = [(id_, d) for id_, d in all_data if d.get("Type") == "movie"]
+            filtered = [(id_, d) for id_, d in st.session_state.all_data if d.get("Type") == "movie"]
         elif media_type == "Alleen series":
-            filtered = [(id_, d) for id_, d in all_data if d.get("Type") == "series"]
+            filtered = [(id_, d) for id_, d in st.session_state.all_data if d.get("Type") == "series"]
         else:
-            filtered = all_data
+            filtered = st.session_state.all_data
 
         if not filtered:
             st.warning("⚠️ Geen titels gevonden met dat type.")
             st.stop()
 
-        # Cache en selectiebeheer
         if "details_cache" not in st.session_state:
             st.session_state.details_cache = {}
         if "last_selected" not in st.session_state:
-            st.session_state.last_selected = None
+            st.session_state.last_selected = random.choice(filtered)
 
-        # Selectieknoppen
-        col_button1, col_button2 = st.columns(2)
-        with col_button1:
-            if st.button("🎲 Willekeurige selectie", type="primary") or st.session_state.last_selected is None:
-                st.session_state.last_selected = random.choice(filtered)
+        if st.button("🔁 Nieuwe selectie", type="primary"):
+            st.session_state.last_selected = random.choice(filtered)
 
-        with col_button2:
-            if st.button("🔁 Nieuwe selectie"):
-                st.session_state.last_selected = random.choice(filtered)
+        if "favorites" not in st.session_state:
+            st.session_state.favorites = []
 
         if st.session_state.last_selected:
             chosen_id, movie = st.session_state.last_selected
@@ -158,20 +151,27 @@ if uploaded_file:
             if chosen_id in st.session_state.details_cache:
                 details = st.session_state.details_cache[chosen_id]
             else:
-                with st.spinner("📡 Ophalen extra gegevens..."):
-                    imdb_details = get_imdb_details(chosen_id)
-                    poster_url = get_poster_url(chosen_id)
-                    trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
-                    details = {
-                        "imdb_details": imdb_details,
-                        "poster_url": poster_url,
-                        "trailer_url": trailer_url
-                    }
-                    st.session_state.details_cache[chosen_id] = details
+                imdb_details = get_imdb_details(chosen_id)
+                poster_url = get_poster_url(chosen_id)
+                trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
+                details = {
+                    "imdb_details": imdb_details,
+                    "poster_url": poster_url,
+                    "trailer_url": trailer_url
+                }
+                st.session_state.details_cache[chosen_id] = details
 
             imdb_details = details["imdb_details"]
             poster_url = details["poster_url"]
             trailer_url = details["trailer_url"]
+
+            col_title, col_button = st.columns([3, 1])
+            with col_title:
+                st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
+            with col_button:
+                if st.button("❤️ Voeg toe aan favorieten"):
+                    if chosen_id not in [fav[0] for fav in st.session_state.favorites]:
+                        st.session_state.favorites.append((chosen_id, movie))
 
             col1, col2 = st.columns([1, 2])
             with col1:
@@ -181,7 +181,6 @@ if uploaded_file:
                     st.warning("Geen poster beschikbaar")
 
             with col2:
-                st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
                 st.markdown(f"**🎞️ Type:** {movie.get('Type', 'Onbekend').capitalize()}")
                 st.markdown(f"**🎬 Regisseur:** {imdb_details['director']}")
                 st.markdown("**🌟 Hoofdrolspelers:**")
