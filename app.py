@@ -8,7 +8,7 @@ from io import StringIO
 
 # Configuratie
 st.set_page_config(page_title="🎬 IMDb Random Picker", layout="centered")
-OMDB_API_KEY = "672ca221"  # Vervang met je eigen key
+OMDB_API_KEY = "672ca221"
 
 # Functies
 @st.cache_data(show_spinner=False)
@@ -42,21 +42,19 @@ def get_imdb_details(imdb_id):
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Regisseur
+
         director = "Onbekend"
         director_section = soup.select_one('li[data-testid="title-pc-principal-credit"]:-soup-contains("Director")')
         if director_section:
             director = director_section.get_text(strip=True).replace('Director', '').strip()
-        
-        # Cast
+
         cast = []
         cast_items = soup.select('a[data-testid="title-cast-item__actor"]')
         for item in cast_items[:5]:
             actor = item.get_text(strip=True)
             if actor:
                 cast.append(actor)
-        
+
         return {
             'director': director,
             'cast': cast if cast else ["Geen cast informatie beschikbaar"]
@@ -109,19 +107,17 @@ if uploaded_file:
             uploaded_file.seek(0)
             content = uploaded_file.read().decode('latin-1')
             df = pd.read_csv(StringIO(content))
-        
+
         with st.spinner("🔍 IMDb ID's worden gezocht..."):
             imdb_ids = extract_imdb_ids(df)
-        
+
         if not imdb_ids:
             st.warning("⚠️ Geen IMDb ID's gevonden.")
             st.stop()
         st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
 
-        # Mediatype filter
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        # Vooraf ophalen van OMDb-data
         with st.spinner("📦 Ophalen metadata van OMDb..."):
             all_data = []
             for imdb_id in imdb_ids:
@@ -129,7 +125,6 @@ if uploaded_file:
                 if data:
                     all_data.append((imdb_id, data))
 
-        # Filteren op type
         if media_type == "Alleen films":
             filtered = [(id_, d) for id_, d in all_data if d.get("Type") == "movie"]
         elif media_type == "Alleen series":
@@ -141,25 +136,38 @@ if uploaded_file:
             st.warning("⚠️ Geen titels gevonden met dat type.")
             st.stop()
 
-        # In-memory cache voor extra details
+        # Cache en selectiebeheer
         if "details_cache" not in st.session_state:
             st.session_state.details_cache = {}
+        if "last_selected" not in st.session_state:
+            st.session_state.last_selected = None
 
-        if st.button("🎲 Willekeurige selectie", type="primary"):
-            chosen_id, movie = random.choice(filtered)
+        # Selectieknoppen
+        col_button1, col_button2 = st.columns(2)
+        with col_button1:
+            if st.button("🎲 Willekeurige selectie", type="primary") or st.session_state.last_selected is None:
+                st.session_state.last_selected = random.choice(filtered)
+
+        with col_button2:
+            if st.button("🔁 Nieuwe selectie"):
+                st.session_state.last_selected = random.choice(filtered)
+
+        if st.session_state.last_selected:
+            chosen_id, movie = st.session_state.last_selected
 
             if chosen_id in st.session_state.details_cache:
                 details = st.session_state.details_cache[chosen_id]
             else:
-                imdb_details = get_imdb_details(chosen_id)
-                poster_url = get_poster_url(chosen_id)
-                trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
-                details = {
-                    "imdb_details": imdb_details,
-                    "poster_url": poster_url,
-                    "trailer_url": trailer_url
-                }
-                st.session_state.details_cache[chosen_id] = details
+                with st.spinner("📡 Ophalen extra gegevens..."):
+                    imdb_details = get_imdb_details(chosen_id)
+                    poster_url = get_poster_url(chosen_id)
+                    trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
+                    details = {
+                        "imdb_details": imdb_details,
+                        "poster_url": poster_url,
+                        "trailer_url": trailer_url
+                    }
+                    st.session_state.details_cache[chosen_id] = details
 
             imdb_details = details["imdb_details"]
             poster_url = details["poster_url"]
