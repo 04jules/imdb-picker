@@ -35,10 +35,12 @@ def extract_imdb_ids(df):
             continue
     return list(imdb_ids)
 
+@st.cache_data(show_spinner=False, ttl=3600)
 def get_movie_data(imdb_id):
     try:
         url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
         response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
         return data if data.get('Response') == 'True' else {}
     except:
@@ -107,69 +109,98 @@ if uploaded_file:
         st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        # Eerste keer laden: progress bar en data cachen
+        # (Re)build cached all_data als het nog niet bestaat of als media_type veranderd is
+        rebuild = False
         if "all_data" not in st.session_state:
+            rebuild = True
+        elif st.session_state.get("last_media_type") != media_type:
+            rebuild = True
+
+        if rebuild:
             st.session_state.all_data = []
-            progress = st.progress(0)
-            for i, imdb_id in enumerate(imdb_ids[:50]):
-                movie_data = get_movie_data(imdb_id)
-                if movie_data:
-                    if (media_type == "Alleen films" and movie_data.get("Type") != "movie") or \
-                       (media_type == "Alleen series" and movie_data.get("Type") != "series"):
+            st.session_state.last_media_type = media_type
+            count = min(50, len(imdb_ids))
+            with st.spinner("Titels ophalen en cachen..."):
+                progress = st.progress(0)
+                for i, imdb_id in enumerate(imdb_ids[:count]):
+                    movie_data = get_movie_data(imdb_id)
+                    if not movie_data:
+                        progress.progress((i+1)/count)
                         continue
+                    if media_type == "Alleen films" and movie_data.get("Type") != "movie":
+                        progress.progress((i+1)/count)
+                        continue
+                    if media_type == "Alleen series" and movie_data.get("Type") != "series":
+                        progress.progress((i+1)/count)
+                        continue
+
                     details = get_imdb_details_and_poster(imdb_id)
                     trailer = find_youtube_trailer(movie_data.get('Title'), movie_data.get('Year'))
                     st.session_state.all_data.append((imdb_id, movie_data, details, trailer))
-                progress.progress((i+1) / min(len(imdb_ids[:50]), 50))
-            progress.empty()
+                    progress.progress((i+1)/count)
+                progress.empty()
 
         if not st.session_state.all_data:
             st.warning("⚠️ Geen titels gevonden met dat type.")
             st.stop()
 
-        if "last_selected" not in st.session_state:
-            st.session_state.last_selected = random.choice(st.session_state.all_data)
+        # Zorg dat last_selected_idx geldig is
+        if "last_selected_idx" not in st.session_state or st.session_state.last_selected_idx >= len(st.session_state.all_data):
+            st.session_state.last_selected_idx = random.randrange(len(st.session_state.all_data))
 
-        # Nieuwe selectie zonder opnieuw laden
+        # Nieuwe selectie-button: veilig handelen (geen lege sequence)
         if st.button("🔁 Nieuwe selectie", type="primary"):
-            available_choices = [x for x in st.session_state.all_data if x != st.session_state.last_selected]
-            st.session_state.last_selected = random.choice(available_choices)
+            total = len(st.session_state.all_data)
+            if total == 1:
+                st.info("Er is maar één titel beschikbaar — kan niet wisselen.")
+            else:
+                # kies een andere index dan de huidige
+                new_idx = random.randrange(total)
+                tries = 0
+                while new_idx == st.session_state.last_selected_idx and tries < 10:
+                    new_idx = random.randrange(total)
+                    tries += 1
+                if new_idx == st.session_state.last_selected_idx:
+                    # als het na veel pogingen nog hetzelfde is (zeer zeldzaam), kies de volgende
+                    new_idx = (st.session_state.last_selected_idx + 1) % total
+                st.session_state.last_selected_idx = new_idx
 
+        # Favorieten initialiseren
         if "favorites" not in st.session_state:
             st.session_state.favorites = []
 
-        if st.session_state.last_selected:
-            chosen_id, movie, imdb_details, trailer_url = st.session_state.last_selected
+        # Toon huidige selectie
+        chosen_id, movie, imdb_details, trailer_url = st.session_state.all_data[st.session_state.last_selected_idx]
 
-            col_title, col_button = st.columns([3, 1])
-            with col_title:
-                st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
-            with col_button:
-                if st.button("❤️ Voeg toe aan favorieten"):
-                    if chosen_id not in [fav[0] for fav in st.session_state.favorites]:
-                        st.session_state.favorites.append((chosen_id, movie))
+        col_title, col_button = st.columns([3, 1])
+        with col_title:
+            st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
+        with col_button:
+            if st.button("❤️ Voeg toe aan favorieten"):
+                if chosen_id not in [fav[0] for fav in st.session_state.favorites]:
+                    st.session_state.favorites.append((chosen_id, movie))
 
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                if imdb_details['poster_url']:
-                    st.image(imdb_details['poster_url'], width=200)
-                else:
-                    st.warning("Geen poster beschikbaar")
-            with col2:
-                st.markdown(f"**🎞️ Type:** {movie.get('Type', 'Onbekend').capitalize()}")
-                st.markdown(f"**🎬 Regisseur:** {imdb_details['director']}")
-                st.markdown("**🌟 Hoofdrolspelers:**")
-                for actor in imdb_details['cast']:
-                    st.markdown(f"- {actor}")
-                st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
-                st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
-                st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
-                st.markdown(f"[🔗 IMDb pagina](https://www.imdb.com/title/{chosen_id}/)")
-                if trailer_url:
-                    st.video(trailer_url)
-                else:
-                    st.warning("Geen trailer gevonden")
-                st.markdown(f"**📖 Verhaal:**  \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            if imdb_details['poster_url']:
+                st.image(imdb_details['poster_url'], width=200)
+            else:
+                st.warning("Geen poster beschikbaar")
+        with col2:
+            st.markdown(f"**🎞️ Type:** {movie.get('Type', 'Onbekend').capitalize()}")
+            st.markdown(f"**🎬 Regisseur:** {imdb_details['director']}")
+            st.markdown("**🌟 Hoofdrolspelers:**")
+            for actor in imdb_details['cast']:
+                st.markdown(f"- {actor}")
+            st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
+            st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
+            st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
+            st.markdown(f"[🔗 IMDb pagina](https://www.imdb.com/title/{chosen_id}/)")
+            if trailer_url:
+                st.video(trailer_url)
+            else:
+                st.warning("Geen trailer gevonden")
+            st.markdown(f"**📖 Verhaal:**  \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
 
     except Exception as e:
         st.error(f"❌ Fout bij verwerken bestand: {str(e)}")
