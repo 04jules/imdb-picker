@@ -1,15 +1,23 @@
+import os
 import streamlit as st
 import requests
 from datetime import datetime
 
+# Streamlit config
 st.set_page_config(page_title="🎥 Future Film Radar Pro", layout="wide")
 st.title("🎥 Future Film Radar Pro")
 st.markdown("De meest complete filmverkenner voor toekomstige releases")
 
-TMDB_API_KEY = "98064dd9e851df83fdc6709c1e098107"
+# 🔑 API Keys uit Environment Variables
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+if not TMDB_API_KEY:
+    st.error("❌ TMDB_API_KEY ontbreekt in de environment variables!")
+    st.stop()
 
+# --------- API FUNCTIES ---------
 @st.cache_data(ttl=3600)
 def fetch_movies_for_year(year, max_pages=5):
+    """Haalt films op uit TMDB voor een specifiek jaar."""
     all_movies = []
     base_url = "https://api.themoviedb.org/3/discover/movie"
     start_date = f"{year}-01-01"
@@ -24,7 +32,6 @@ def fetch_movies_for_year(year, max_pages=5):
             "primary_release_date.gte": start_date,
             "primary_release_date.lte": end_date,
             "page": page,
-            # "with_original_language": "en",  # Optioneel, je kan ook alle talen toestaan
         }
         try:
             resp = requests.get(base_url, params=params, timeout=10)
@@ -43,6 +50,7 @@ def fetch_movies_for_year(year, max_pages=5):
 
 @st.cache_data(ttl=3600)
 def get_movie_details(movie_id):
+    """Haalt details op van een specifieke film."""
     url = f"https://api.themoviedb.org/3/movie/{movie_id}"
     params = {
         "api_key": TMDB_API_KEY,
@@ -53,17 +61,18 @@ def get_movie_details(movie_id):
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        # fallback engels als nl niet beschikbaar
+        # Fallback naar Engels als geen NL beschrijving
         if not data.get("overview"):
             params["language"] = "en-US"
             resp_en = requests.get(url, params=params, timeout=5)
-            if resp_en.status_code == 200:
+            if resp_en.ok:
                 data_en = resp_en.json()
                 data["overview"] = data_en.get("overview", "Geen beschrijving beschikbaar")
         return data
     except Exception:
         return None
 
+# --------- HELPER FUNCTIES ---------
 def format_date(date_str):
     try:
         return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d/%m/%Y")
@@ -73,8 +82,7 @@ def format_date(date_str):
 def get_director(details):
     if not details or "credits" not in details:
         return "Onbekend"
-    crew = details["credits"].get("crew", [])
-    for person in crew:
+    for person in details["credits"].get("crew", []):
         if person.get("job") == "Director":
             return person.get("name", "Onbekend")
     return "Onbekend"
@@ -132,6 +140,7 @@ def display_movie(movie, details):
                             st.markdown(f"- {actor_name}")
             st.markdown(f"**📖 Verhaal:**  \n{details.get('overview', 'Geen beschrijving beschikbaar')}")
 
+# --------- MAIN ---------
 def main():
     st.sidebar.header("Filters")
     current_year = datetime.now().year
@@ -148,6 +157,14 @@ def main():
 
     today = datetime.now().date()
     filtered_movies = []
+    
+    genre_map = {
+        "Blockbuster": ["Actie", "Avontuur", "Science Fiction", "Fantasy", "Action", "Adventure", "Sci-Fi", "Fantasy"],
+        "Arthouse": ["Drama", "Art House", "Independent"],
+        "Erotisch": ["Romance", "Erotic"],
+        "Experimenteel": ["Experimental", "Avant Garde"]
+    }
+
     for movie in movies:
         release_date_str = movie.get("release_date")
         if not release_date_str:
@@ -157,41 +174,23 @@ def main():
         except Exception:
             continue
 
-        # Filter released films als checkbox uit staat
-        if not show_released:
-            if selected_year == str(current_year):
-                # Voor huidig jaar: enkel films vanaf vandaag tonen
-                if release_date < today:
-                    continue
-            else:
-                # Voor andere jaren: ook enkel toekomstige films tonen
-                if release_date < today:
-                    continue
+        # Filter released films
+        if not show_released and release_date < today:
+            continue
 
-        # Genre filtering alleen als niet "Alles"
+        details = get_movie_details(movie["id"])
+        if not details:
+            continue
+
         if selected_genre != "Alles":
-            details = get_movie_details(movie["id"])
-            if not details:
-                continue
             genre_names = [g["name"] for g in details.get("genres", [])]
-            # Eenvoudige mapping genres (kan je zelf uitbreiden)
-            genre_map = {
-                "Blockbuster": ["Actie", "Avontuur", "Science Fiction", "Fantasy", "Action", "Adventure", "Sci-Fi", "Fantasy"],
-                "Arthouse": ["Drama", "Art House", "Independent"],
-                "Erotisch": ["Romance", "Erotic"],
-                "Experimenteel": ["Experimental", "Avant Garde"]
-            }
             allowed_genres = genre_map.get(selected_genre, [])
             if not any(g in allowed_genres for g in genre_names):
-                continue
-        else:
-            details = get_movie_details(movie["id"])
-            if not details:
                 continue
 
         filtered_movies.append((movie, details))
 
-    # Sorteren op release_date oplopend (chronologisch)
+    # Sorteren op release_date
     filtered_movies.sort(key=lambda x: x[0].get("release_date") or "")
 
     if not filtered_movies:

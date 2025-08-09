@@ -1,4 +1,5 @@
 # app.py
+import os
 import streamlit as st
 import pandas as pd
 import requests
@@ -7,9 +8,20 @@ import re
 from bs4 import BeautifulSoup
 from io import StringIO
 
+# Laad lokale .env indien aanwezig (handig voor lokaal testen, maar Render gebruikt dit niet)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 st.set_page_config(page_title="🎬 IMDb Random Picker", layout="centered")
 
-OMDB_API_KEY = "672ca221"
+# Haal OMDb API key uit environment variable
+OMDB_API_KEY = os.getenv("OMDB_API_KEY")
+if not OMDB_API_KEY:
+    st.error("❌ Geen OMDB_API_KEY gevonden. Stel deze in als environment variable.")
+    st.stop()
 
 @st.cache_data(show_spinner=False)
 def extract_imdb_ids(df):

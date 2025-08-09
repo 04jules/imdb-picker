@@ -1,11 +1,15 @@
+import os
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 import time
 
-# Je TMDB config
-tmdb_api_key = "98064dd9e851df83fdc6709c1e098107"
+# Haal TMDB API key op uit environment variabele
+tmdb_api_key = os.environ.get("TMDB_API_KEY")
+if not tmdb_api_key:
+    st.error("TMDB API key ontbreekt. Zet deze als environment variabele: TMDB_API_KEY")
+    st.stop()
 
 st.set_page_config(page_title="AI Radar zonder AI - Letterboxd + TMDB", layout="wide")
 st.title("🎯 Future Film Radar – Zonder AI, met Letterboxd + TMDB")
@@ -43,15 +47,11 @@ only_future = st.sidebar.toggle("Toon enkel toekomstige releases", value=True)
 
 # --- Letterboxd scraper functie ---
 def scrape_letterboxd_popular(year, max_films=50):
-    """
-    Haal populaire films van Letterboxd voor een bepaald jaar.
-    Scraped titel + link naar film pagina.
-    """
     films = []
     page = 1
     base_url = f"https://letterboxd.com/films/popular/year/{year}/page/"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0"
     }
     
     while len(films) < max_films:
@@ -62,8 +62,6 @@ def scrape_letterboxd_popular(year, max_films=50):
             break
         
         soup = BeautifulSoup(resp.text, "html.parser")
-        
-        # Films staan in <div class="film-poster ...">, titel in data-film-name attr of alt img
         posters = soup.select("div.film-poster")
         if not posters:
             break
@@ -73,7 +71,6 @@ def scrape_letterboxd_popular(year, max_films=50):
                 break
             title = p.get("data-film-name")
             if not title:
-                # fallback: alt van img
                 img = p.find("img")
                 title = img["alt"] if img and img.has_attr("alt") else None
             
@@ -81,15 +78,12 @@ def scrape_letterboxd_popular(year, max_films=50):
                 films.append(title)
         
         page += 1
-        time.sleep(1)  # beleefd wachten
+        time.sleep(1)
     
     return films
 
 # --- TMDB zoekfunctie ---
 def search_tmdb_movie(title):
-    """
-    Zoek een film op TMDB via titel, haal belangrijkste info
-    """
     url = "https://api.themoviedb.org/3/search/movie"
     params = {
         "api_key": tmdb_api_key,
@@ -105,8 +99,6 @@ def search_tmdb_movie(title):
     results = data.get("results", [])
     if not results:
         return None
-    
-    # Kies de beste match (eerste resultaat)
     movie = results[0]
     return {
         "title": movie.get("title"),
@@ -116,7 +108,6 @@ def search_tmdb_movie(title):
         "genre_ids": movie.get("genre_ids", [])
     }
 
-# --- Genre filter functie ---
 def filter_by_genre(movies, genre_id):
     if genre_id is None:
         return movies
@@ -135,12 +126,10 @@ if st.button("Laad populaire films van Letterboxd + TMDB data"):
         if movie_data:
             tmdb_movies.append(movie_data)
         progress_bar.progress((i+1) / len(films))
-        time.sleep(0.25)  # niet te snel ivm API limiet
+        time.sleep(0.25)
     
-    # Filter op genre
     filtered = filter_by_genre(tmdb_movies, selected_genre_id)
     
-    # Filter op toekomst
     if only_future:
         today = datetime.now().date().isoformat()
         filtered = [m for m in filtered if m.get("release_date") and m["release_date"] > today]
