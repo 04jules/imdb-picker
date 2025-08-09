@@ -1,4 +1,4 @@
-# pages/Mijn favorieten.py
+# pages/Favorieten.py
 import streamlit as st
 
 st.title("📂 Mijn favorieten")
