@@ -4,7 +4,6 @@ import pandas as pd
 import requests
 import random
 import re
-import time
 from bs4 import BeautifulSoup
 from io import StringIO
 
@@ -47,7 +46,6 @@ def get_movie_data(imdb_id):
         return {}
 
 def get_imdb_details_and_poster(imdb_id):
-    """Haalt regisseur, cast en poster in 1x op (sneller)."""
     try:
         url = f"https://www.imdb.com/title/{imdb_id}/"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -83,7 +81,6 @@ def find_youtube_trailer(title, year):
     except:
         return None
 
-# UI start
 st.title("🎬 IMDb Random Picker")
 st.markdown("Upload een CSV-bestand met IMDb ID's (zoals `tt1234567`). Werkt met watchlists of elke CSV met IDs.")
 
@@ -109,7 +106,7 @@ if uploaded_file:
         st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        # (Re)build cached all_data als het nog niet bestaat of als media_type veranderd is
+        # Laden en filteren apart, alles ophalen eerst
         rebuild = False
         if "all_data" not in st.session_state:
             rebuild = True
@@ -119,57 +116,52 @@ if uploaded_file:
         if rebuild:
             st.session_state.all_data = []
             st.session_state.last_media_type = media_type
-            count = min(50, len(imdb_ids))
-            with st.spinner("Titels ophalen en cachen..."):
+            count = len(imdb_ids)
+            with st.spinner("Titels ophalen en cachen... Dit kan even duren bij grote lijsten."):
                 progress = st.progress(0)
-                for i, imdb_id in enumerate(imdb_ids[:count]):
+                for i, imdb_id in enumerate(imdb_ids):
                     movie_data = get_movie_data(imdb_id)
                     if not movie_data:
                         progress.progress((i+1)/count)
                         continue
-                    if media_type == "Alleen films" and movie_data.get("Type") != "movie":
-                        progress.progress((i+1)/count)
-                        continue
-                    if media_type == "Alleen series" and movie_data.get("Type") != "series":
-                        progress.progress((i+1)/count)
-                        continue
 
+                    # Voeg toe zonder filter eerst
                     details = get_imdb_details_and_poster(imdb_id)
                     trailer = find_youtube_trailer(movie_data.get('Title'), movie_data.get('Year'))
                     st.session_state.all_data.append((imdb_id, movie_data, details, trailer))
                     progress.progress((i+1)/count)
                 progress.empty()
 
+            # Pas media_type filter toe **na** alles ophalen
+            if media_type == "Alleen films":
+                st.session_state.all_data = [item for item in st.session_state.all_data if item[1].get("Type") == "movie"]
+            elif media_type == "Alleen series":
+                st.session_state.all_data = [item for item in st.session_state.all_data if item[1].get("Type") == "series"]
+
         if not st.session_state.all_data:
             st.warning("⚠️ Geen titels gevonden met dat type.")
             st.stop()
 
-        # Zorg dat last_selected_idx geldig is
         if "last_selected_idx" not in st.session_state or st.session_state.last_selected_idx >= len(st.session_state.all_data):
             st.session_state.last_selected_idx = random.randrange(len(st.session_state.all_data))
 
-        # Nieuwe selectie-button: veilig handelen (geen lege sequence)
         if st.button("🔁 Nieuwe selectie", type="primary"):
             total = len(st.session_state.all_data)
             if total == 1:
                 st.info("Er is maar één titel beschikbaar — kan niet wisselen.")
             else:
-                # kies een andere index dan de huidige
                 new_idx = random.randrange(total)
                 tries = 0
                 while new_idx == st.session_state.last_selected_idx and tries < 10:
                     new_idx = random.randrange(total)
                     tries += 1
                 if new_idx == st.session_state.last_selected_idx:
-                    # als het na veel pogingen nog hetzelfde is (zeer zeldzaam), kies de volgende
                     new_idx = (st.session_state.last_selected_idx + 1) % total
                 st.session_state.last_selected_idx = new_idx
 
-        # Favorieten initialiseren
         if "favorites" not in st.session_state:
             st.session_state.favorites = []
 
-        # Toon huidige selectie
         chosen_id, movie, imdb_details, trailer_url = st.session_state.all_data[st.session_state.last_selected_idx]
 
         col_title, col_button = st.columns([3, 1])
