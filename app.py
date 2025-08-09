@@ -1,4 +1,3 @@
-# app.py
 import os
 import streamlit as st
 import pandas as pd
@@ -8,7 +7,7 @@ import re
 from bs4 import BeautifulSoup
 from io import StringIO
 
-# Laad lokale .env indien aanwezig (handig voor lokaal testen, maar Render gebruikt dit niet)
+# Laad lokale .env indien aanwezig
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -146,13 +145,28 @@ if uploaded_file:
             st.warning("⚠️ Geen titels gevonden met dat type.")
             st.stop()
 
-        if "details_cache" not in st.session_state:
-            st.session_state.details_cache = {}
+        # --- Nieuw shuffle systeem ---
+        if "shuffled_list" not in st.session_state or len(st.session_state.shuffled_list) != len(filtered):
+            st.session_state.shuffled_list = random.sample(filtered, len(filtered))
+            st.session_state.shuffle_index = 0
+
+        def get_next_random():
+            if st.session_state.shuffle_index >= len(st.session_state.shuffled_list):
+                st.session_state.shuffled_list = random.sample(filtered, len(filtered))
+                st.session_state.shuffle_index = 0
+            choice = st.session_state.shuffled_list[st.session_state.shuffle_index]
+            st.session_state.shuffle_index += 1
+            return choice
+
         if "last_selected" not in st.session_state:
-            st.session_state.last_selected = random.choice(filtered)
+            st.session_state.last_selected = get_next_random()
 
         if st.button("🔁 Nieuwe selectie", type="primary"):
-            st.session_state.last_selected = random.choice(filtered)
+            new_choice = get_next_random()
+            while new_choice == st.session_state.last_selected and len(filtered) > 1:
+                new_choice = get_next_random()
+            st.session_state.last_selected = new_choice
+        # --- Einde shuffle systeem ---
 
         if "favorites" not in st.session_state:
             st.session_state.favorites = []
@@ -160,7 +174,7 @@ if uploaded_file:
         if st.session_state.last_selected:
             chosen_id, movie = st.session_state.last_selected
 
-            if chosen_id in st.session_state.details_cache:
+            if chosen_id in st.session_state.details_cache if "details_cache" in st.session_state else {}:
                 details = st.session_state.details_cache[chosen_id]
             else:
                 imdb_details = get_imdb_details(chosen_id)
@@ -171,6 +185,8 @@ if uploaded_file:
                     "poster_url": poster_url,
                     "trailer_url": trailer_url
                 }
+                if "details_cache" not in st.session_state:
+                    st.session_state.details_cache = {}
                 st.session_state.details_cache[chosen_id] = details
 
             imdb_details = details["imdb_details"]
