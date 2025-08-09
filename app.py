@@ -4,7 +4,6 @@ import pandas as pd
 import requests
 import random
 import re
-from bs4 import BeautifulSoup
 from io import StringIO
 
 try:
@@ -34,39 +33,16 @@ def extract_imdb_ids(df):
             continue
     return list(imdb_ids)
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=True, ttl=3600)
 def get_movie_data(imdb_id):
     try:
-        url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
+        url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         return data if data.get('Response') == 'True' else {}
     except:
         return {}
-
-def get_imdb_details_and_poster(imdb_id):
-    try:
-        url = f"https://www.imdb.com/title/{imdb_id}/"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        director = "Onbekend"
-        director_section = soup.select_one('li[data-testid="title-pc-principal-credit"]')
-        if director_section:
-            director = director_section.get_text(strip=True).replace('Director', '').strip()
-
-        cast = [item.get_text(strip=True) for item in soup.select('a[data-testid="title-cast-item__actor"]')[:5]]
-        if not cast:
-            cast = ["Geen cast informatie beschikbaar"]
-
-        meta = soup.find("meta", property="og:image")
-        poster_url = meta["content"] if meta else None
-
-        return {"director": director, "cast": cast, "poster_url": poster_url}
-    except:
-        return {"director": "Onbekend", "cast": ["Geen info"], "poster_url": None}
 
 def find_youtube_trailer(title, year):
     try:
@@ -106,7 +82,7 @@ if uploaded_file:
         st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        # Laden en filteren apart, alles ophalen eerst
+        # Laden van alle films via OMDb (basisdata)
         rebuild = False
         if "all_data" not in st.session_state:
             rebuild = True
@@ -124,15 +100,11 @@ if uploaded_file:
                     if not movie_data:
                         progress.progress((i+1)/count)
                         continue
-
-                    # Voeg toe zonder filter eerst
-                    details = get_imdb_details_and_poster(imdb_id)
-                    trailer = find_youtube_trailer(movie_data.get('Title'), movie_data.get('Year'))
-                    st.session_state.all_data.append((imdb_id, movie_data, details, trailer))
+                    st.session_state.all_data.append((imdb_id, movie_data))
                     progress.progress((i+1)/count)
                 progress.empty()
 
-            # Pas media_type filter toe **na** alles ophalen
+            # Filter op media_type na ophalen
             if media_type == "Alleen films":
                 st.session_state.all_data = [item for item in st.session_state.all_data if item[1].get("Type") == "movie"]
             elif media_type == "Alleen series":
@@ -162,7 +134,11 @@ if uploaded_file:
         if "favorites" not in st.session_state:
             st.session_state.favorites = []
 
-        chosen_id, movie, imdb_details, trailer_url = st.session_state.all_data[st.session_state.last_selected_idx]
+        # Toon selectie
+        chosen_id, movie = st.session_state.all_data[st.session_state.last_selected_idx]
+
+        # Pas trailer laden uit bij selectie (live ophalen)
+        trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
 
         col_title, col_button = st.columns([3, 1])
         with col_title:
@@ -174,16 +150,21 @@ if uploaded_file:
 
         col1, col2 = st.columns([1, 2])
         with col1:
-            if imdb_details['poster_url']:
-                st.image(imdb_details['poster_url'], width=200)
+            poster = movie.get('Poster')
+            if poster and poster != "N/A":
+                st.image(poster, width=200)
             else:
                 st.warning("Geen poster beschikbaar")
         with col2:
             st.markdown(f"**🎞️ Type:** {movie.get('Type', 'Onbekend').capitalize()}")
-            st.markdown(f"**🎬 Regisseur:** {imdb_details['director']}")
-            st.markdown("**🌟 Hoofdrolspelers:**")
-            for actor in imdb_details['cast']:
-                st.markdown(f"- {actor}")
+            st.markdown(f"**🎬 Regisseur:** {movie.get('Director', 'Onbekend')}")
+            cast = movie.get('Actors', 'Geen cast informatie beschikbaar')
+            if cast and cast != "N/A":
+                st.markdown("**🌟 Hoofdrolspelers:**")
+                for actor in cast.split(','):
+                    st.markdown(f"- {actor.strip()}")
+            else:
+                st.markdown("**🌟 Hoofdrolspelers:** Geen cast informatie beschikbaar")
             st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
             st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
             st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
