@@ -156,9 +156,12 @@ def main():
     with st.spinner("Films laden..."):
         movies = fetch_movies_for_year(int(selected_year))
 
+    # --- Debug: hoeveel films opgehaald ---
+    st.info(f"📥 TMDB gaf {len(movies)} films terug voor {selected_year}")
+
     today = datetime.now().date()
     filtered_movies = []
-    
+
     genre_map = {
         "Blockbuster": ["Actie", "Avontuur", "Science Fiction", "Fantasy", "Action", "Adventure", "Sci-Fi", "Fantasy"],
         "Arthouse": ["Drama", "Art House", "Independent"],
@@ -166,38 +169,62 @@ def main():
         "Experimenteel": ["Experimental", "Avant Garde"]
     }
 
+    skipped_no_release = 0
+    skipped_released = 0
+    skipped_no_details = 0
+    skipped_genre = 0
+
     for movie in movies:
         release_date_str = movie.get("release_date")
         if not release_date_str:
+            skipped_no_release += 1
+            st.write(f"⏭️ {movie.get('title')} — geen release date")
             continue
+
         try:
             release_date = datetime.strptime(release_date_str, "%Y-%m-%d").date()
         except Exception:
+            skipped_no_release += 1
+            st.write(f"⏭️ {movie.get('title')} — ongeldige release date")
             continue
 
+        # Filter released films
         if not show_released and release_date < today:
+            skipped_released += 1
+            st.write(f"⏭️ {movie.get('title')} — al uitgebracht ({release_date})")
             continue
 
         details = get_movie_details_cached(movie["id"])
         if not details:
+            skipped_no_details += 1
+            st.write(f"⏭️ {movie.get('title')} — geen details")
             continue
 
         if selected_genre != "Alles":
             genre_names = [g["name"] for g in details.get("genres", [])]
             allowed_genres = genre_map.get(selected_genre, [])
             if not any(g in allowed_genres for g in genre_names):
+                skipped_genre += 1
+                st.write(f"⏭️ {movie.get('title')} — genre {genre_names} matcht niet met {allowed_genres}")
                 continue
 
         filtered_movies.append((movie, details))
 
-    filtered_movies.sort(key=lambda x: x[0].get("release_date") or "")
+    # --- Debug overzicht ---
+    st.info(f"✅ Overgebleven films: {len(filtered_movies)}")
+    st.write(f"❌ Geen release date: {skipped_no_release}")
+    st.write(f"❌ Al uitgebracht: {skipped_released}")
+    st.write(f"❌ Geen details: {skipped_no_details}")
+    st.write(f"❌ Genre mismatch: {skipped_genre}")
 
+    # --- Weergave films ---
     if not filtered_movies:
-        st.warning("Geen films gevonden met deze filters. Probeer een ander jaar of genre.")
+        st.warning("Geen films gevonden met deze filters.")
     else:
         st.success(f"Gevonden: {len(filtered_movies)} films voor {selected_year}")
         for movie, details in filtered_movies:
             display_movie(movie, details)
+
 
 if __name__ == "__main__":
     main()
