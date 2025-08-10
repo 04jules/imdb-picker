@@ -8,7 +8,7 @@ st.set_page_config(page_title="🎥 Future Film Radar Pro", layout="wide")
 st.title("🎥 Future Film Radar Pro")
 st.markdown("De meest complete filmverkenner voor toekomstige releases")
 
-# 🔑 API Keys uit Environment Variables
+# 🔑 API Keys
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 if not TMDB_API_KEY:
     st.error("❌ TMDB_API_KEY ontbreekt in de environment variables!")
@@ -44,13 +44,13 @@ def fetch_movies_for_year(year, max_pages=5):
             if page >= data.get("total_pages", 0):
                 break
         except Exception as e:
-            st.error(f"Fout bij ophalen films: {e}")
+            st.error(f"Fout bij ophalen films (pagina {page}): {e}")
             break
     return all_movies
 
 @st.cache_data(ttl=3600)
-def get_movie_details(movie_id):
-    """Haalt details op van een specifieke film."""
+def get_movie_details_cached(movie_id):
+    """Haalt details op van een specifieke film en cached deze."""
     url = f"https://api.themoviedb.org/3/movie/{movie_id}"
     params = {
         "api_key": TMDB_API_KEY,
@@ -69,7 +69,8 @@ def get_movie_details(movie_id):
                 data_en = resp_en.json()
                 data["overview"] = data_en.get("overview", "Geen beschrijving beschikbaar")
         return data
-    except Exception:
+    except Exception as e:
+        st.warning(f"Details ophalen mislukt voor ID {movie_id}: {e}")
         return None
 
 # --------- HELPER FUNCTIES ---------
@@ -174,11 +175,10 @@ def main():
         except Exception:
             continue
 
-        # Filter released films
         if not show_released and release_date < today:
             continue
 
-        details = get_movie_details(movie["id"])
+        details = get_movie_details_cached(movie["id"])
         if not details:
             continue
 
@@ -190,7 +190,6 @@ def main():
 
         filtered_movies.append((movie, details))
 
-    # Sorteren op release_date
     filtered_movies.sort(key=lambda x: x[0].get("release_date") or "")
 
     if not filtered_movies:
