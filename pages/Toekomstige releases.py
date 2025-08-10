@@ -33,16 +33,10 @@ def fetch_movies_for_year(year, max_pages=5, min_release_date=None, genre=None):
         "page": 1,
     }
 
-    # Voor Erotisch: include_adult=True en brede genres (Romance, Drama, Thriller)
     if genre == "Erotisch":
         params_base["include_adult"] = True
-        # We vragen geen keyword, want dat is te beperkt voor toekomstige films
-        # Genres 10749 = Romance, 18 = Drama, 53 = Thriller (optioneel, kan ook weggelaten)
-        # Maar voor minimale aanpassing: genres niet geforceerd hier, filteren we later
-        # Dus geen "with_genres" in params hier om niet te restrictief te zijn
     else:
         params_base["include_adult"] = False
-        # Je kan hier genres toevoegen als je wilt, maar we doen dat filtering later ook
 
     for page in range(1, max_pages + 1):
         params = params_base.copy()
@@ -116,7 +110,10 @@ def display_movie(movie, details):
         with col1:
             poster = movie.get("poster_path")
             if poster:
-                st.image(f"https://image.tmdb.org/t/p/w500{poster}", use_container_width=True)
+                try:
+                    st.image(f"https://image.tmdb.org/t/p/w500{poster}", use_container_width=True)
+                except TypeError:
+                    st.image(f"https://image.tmdb.org/t/p/w500{poster}", use_column_width=True)
             else:
                 st.warning("Geen poster beschikbaar")
         with col2:
@@ -148,7 +145,10 @@ def display_movie(movie, details):
                 for idx, (actor_name, actor_img) in enumerate(cast):
                     with cols[idx % 4]:
                         if actor_img:
-                            st.image(actor_img, width=80, caption=actor_name)
+                            try:
+                                st.image(actor_img, width=80, caption=actor_name)
+                            except TypeError:
+                                st.image(actor_img, width=80, caption=actor_name, use_column_width=True)
                         else:
                             st.markdown(f"- {actor_name}")
             st.markdown(f"**📖 Verhaal:**  \n{details.get('overview', 'Geen beschrijving beschikbaar')}")
@@ -179,6 +179,7 @@ def main():
 
     today = datetime.now().date()
     filtered_movies = []
+    seen_ids = set()  # Voor unieke films
 
     genre_map = {
         "Blockbuster": ["Actie", "Avontuur", "Science Fiction", "Fantasy", "Action", "Adventure", "Sci-Fi", "Fantasy"],
@@ -187,7 +188,6 @@ def main():
         "Horror": ["Horror", "Thriller", "Mystery"]
     }
 
-    # Sleutelwoorden voor erotisch genre in overzicht (NEDERLANDS en Engels, klein)
     erotic_keywords = [
         "naakt", "seks", "intimiteit", "lust", "passie", "verleiding",
         "erotisch", "sensueel", "romantiek", "affaire", "liefde",
@@ -227,7 +227,6 @@ def main():
             continue
 
         if selected_genre == "Erotisch":
-            # Filter op genre én presence erotic keywords in overview
             genre_names = [g["name"] for g in details.get("genres", [])]
             allowed_genres = genre_map.get("Erotisch", [])
             if not any(g in allowed_genres for g in genre_names):
@@ -247,6 +246,10 @@ def main():
                     skipped_genre += 1
                     st.write(f"⏭️ {movie.get('title')} — genre {genre_names} matcht niet met {allowed_genres}")
                     continue
+
+        if movie["id"] in seen_ids:
+            continue
+        seen_ids.add(movie["id"])
 
         filtered_movies.append((movie, details))
 
