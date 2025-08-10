@@ -23,6 +23,7 @@ def fetch_movies_for_year(year, max_pages=5, min_release_date=None, genre=None):
     end_date = f"{year}-12-31"
 
     base_url = "https://api.themoviedb.org/3/discover/movie"
+    search_url = "https://api.themoviedb.org/3/search/movie"
 
     params_base = {
         "api_key": TMDB_API_KEY,
@@ -33,17 +34,12 @@ def fetch_movies_for_year(year, max_pages=5, min_release_date=None, genre=None):
         "page": 1,
     }
 
-    # Voor Erotisch: include_adult=True en brede genres (Romance, Drama, Thriller)
     if genre == "Erotisch":
         params_base["include_adult"] = True
-        # We vragen geen keyword, want dat is te beperkt voor toekomstige films
-        # Genres 10749 = Romance, 18 = Drama, 53 = Thriller (optioneel, kan ook weggelaten)
-        # Maar voor minimale aanpassing: genres niet geforceerd hier, filteren we later
-        # Dus geen "with_genres" in params hier om niet te restrictief te zijn
     else:
         params_base["include_adult"] = False
-        # Je kan hier genres toevoegen als je wilt, maar we doen dat filtering later ook
 
+    # Eerst discover movies ophalen
     for page in range(1, max_pages + 1):
         params = params_base.copy()
         params["page"] = page
@@ -60,6 +56,40 @@ def fetch_movies_for_year(year, max_pages=5, min_release_date=None, genre=None):
         except Exception as e:
             st.error(f"Fout bij ophalen films (pagina {page}): {e}")
             break
+
+    # Voor Erotisch genre extra zoeken op keywords in titel/beschrijving
+    if genre == "Erotisch":
+        erotiek_keywords_search = ["nude", "naakt", "erotic", "sensual", "sex", "lust", "passie"]
+        added_ids = set(m["id"] for m in all_movies if "id" in m)
+
+        for keyword in erotiek_keywords_search:
+            for page in range(1, 4):  # max 3 pagina's per keyword
+                search_params = {
+                    "api_key": TMDB_API_KEY,
+                    "language": "nl-NL",
+                    "query": keyword,
+                    "page": page,
+                    "include_adult": True,
+                    "primary_release_date.gte": min_release_date,
+                    "primary_release_date.lte": end_date,
+                }
+                try:
+                    resp = requests.get(search_url, params=search_params, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    results = data.get("results", [])
+                    if not results:
+                        break
+                    for movie in results:
+                        if movie.get("id") not in added_ids:
+                            all_movies.append(movie)
+                            added_ids.add(movie.get("id"))
+                    if page >= data.get("total_pages", 0):
+                        break
+                except Exception as e:
+                    st.error(f"Fout bij TMDB zoekactie '{keyword}' pagina {page}: {e}")
+                    break
+
     return all_movies
 
 @st.cache_data(ttl=3600)
@@ -227,7 +257,6 @@ def main():
             continue
 
         if selected_genre == "Erotisch":
-            # Filter op genre én presence erotic keywords in overview
             genre_names = [g["name"] for g in details.get("genres", [])]
             allowed_genres = genre_map.get("Erotisch", [])
             if not any(g in allowed_genres for g in genre_names):
