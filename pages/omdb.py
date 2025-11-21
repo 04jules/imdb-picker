@@ -340,21 +340,12 @@ if uploaded_file:
                 random.shuffle(st.session_state.available_indices)
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
 
-        if "favorites" not in st.session_state:
-            st.session_state.favorites = []
-
         chosen_id, movie = st.session_state.all_data[st.session_state.last_selected_idx]
 
         trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
 
         # ---------- UI ----------
-        col_title, col_button = st.columns([3, 1])
-        with col_title:
-            st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
-        with col_button:
-            if st.button("❤️ Voeg toe aan favorieten"):
-                if chosen_id not in [fav[0] for fav in st.session_state.favorites]:
-                    st.session_state.favorites.append((chosen_id, movie))
+        st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
 
         col1, col2 = st.columns([1, 2])
         with col1:
