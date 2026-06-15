@@ -30,13 +30,17 @@ REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
 if REDIS_URL and REDIS_TOKEN:
-    redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
-    use_redis = True
+    try:
+        redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
+        use_redis = True
+    except Exception as e:
+        st.error(f"❌ Fout bij initialiseren Upstash verbinding: {str(e)}")
+        use_redis = False
 else:
     st.warning("⚠️ Upstash Redis variabelen niet gevonden. App draait zonder permanente cache.")
     use_redis = False
 
-CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 dagen cacheverloop
+CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 dagen
 
 def get_movie_data_uncached(imdb_id):
     """Haal film op van OMDb (Nederlands met Engelse fallback)"""
@@ -54,13 +58,15 @@ def get_movie_data_uncached(imdb_id):
             response_en.raise_for_status()
             data_en = response_en.json()
             return data_en if data_en.get('Response') == 'True' else {}
-    except:
+    except Exception as e:
+        print(f"OMDb Fetch Error voor {imdb_id}: {e}")
         return {}
 
 def get_cached_movie_data(imdb_ids):
     """Haal films op uit de permanente Upstash Cloud Cache of van OMDb"""
     movies_data = []
     new_movies_count = 0
+    redis_errors = []
     
     with st.spinner("Films ophalen via permanente Cloud Cache..."):
         progress = st.progress(0)
@@ -75,45 +81,66 @@ def get_cached_movie_data(imdb_ids):
                     if cached_data:
                         movie_data = json.loads(cached_data)
                 except Exception as e:
-                    print(f"Redis read error: {e}")
+                    error_msg = f"Leesfout voor {imdb_id}: {str(e)}"
+                    if error_msg not in redis_errors:
+                        redis_errors.append(error_msg)
 
             # 2. Niet in de cache gevonden? Haal live op bij OMDb
             if not movie_data:
                 movie_data = get_movie_data_uncached(imdb_id)
-                if movie_data:
+                if movie_data and movie_data.get('Response') == 'True':
+                    movies_data.append((imdb_id, movie_data))
                     new_movies_count += 1
-                    # Sla het direct op in Upstash voor toekomstig gebruik
+                    
+                    # Sla het direct op in Upstash
                     if use_redis:
                         try:
-                            redis.set(f"movie:{imdb_id}", json.dumps(movie_data), ex=CACHE_TTL_SECONDS)
+                            # forceer string conversie om type-fouten in Upstash te voorkomen
+                            serialized_data = json.dumps(movie_data)
+                            redis.set(f"movie:{imdb_id}", serialized_data, ex=CACHE_TTL_SECONDS)
                         except Exception as e:
-                            print(f"Redis write error: {e}")
-
-            if movie_data:
+                            error_msg = f"Schrijffout voor {imdb_id}: {str(e)}"
+                            if error_msg not in redis_errors:
+                                redis_errors.append(error_msg)
+                else:
+                    # Mocht OMDb de film echt niet kennen
+                    pass
+            else:
                 movies_data.append((imdb_id, movie_data))
                 
             progress.progress((i + 1) / len(imdb_ids))
             
         progress.empty()
         
+    # Toon eventuele databasefouten direct in de UI zodat we kunnen debuggen!
+    if redis_errors:
+        st.error("⚠️ Er ging iets mis met de Upstash Cloud Cache verbinding:")
+        for err in redis_errors[:5]:  # Toon maximaal 5 fouten
+            st.code(err)
+        if len(redis_errors) > 5:
+            st.caption(f"...en nog {len(redis_errors) - 5} andere databasefouten.")
+        
     if new_movies_count > 0 and use_redis:
         st.success(f"✅ {new_movies_count} nieuwe films toegevoegd aan permanente cloud cache!")
+    elif use_redis and not redis_errors:
+        st.info("ℹ️ Alle films stonden al veilig in de cloud cache!")
         
     return movies_data
 
 # ------------------------------
-# 🔎 Extract IMDb IDs (GEFIXED VOOR RECENTE IMDB ID LENGTHS)
+# 🔎 Extract IMDb IDs (Gecorrigeerd voor alle lengtes)
 # ------------------------------
 @st.cache_data(show_spinner=False)
 def extract_imdb_ids(df):
     imdb_ids = set()
-    # \d{7,10} zorgt ervoor dat ID's van 7, 8, 9 én 10 cijfers lang nu volledig worden herkend!
+    # Scant nu heel specifiek op 'tt' met 7 tot 10 cijfers erachter
     pattern = re.compile(r'(tt\d{7,10})')
     for col in df.columns:
         try:
-            matches = df[col].astype(str).str.extractall(pattern)[0].unique()
-            for match in matches:
-                if pd.notna(match):
+            # We zetten de hele kolom om naar tekst en zoeken alle matches
+            for cell in df[col].astype(str):
+                matches = pattern.findall(cell)
+                for match in matches:
                     imdb_ids.add(match)
         except:
             continue
@@ -144,12 +171,9 @@ def find_youtube_trailer(title, year):
     except:
         return None
     
-# 🔞 IMDb Parental Guide: Sex & Nudity (gefixed)
+# 🔞 IMDb Parental Guide: Sex & Nudity
 @st.cache_data(show_spinner=False, ttl=3600)
 def get_sex_nudity_rating(imdb_id):
-    """
-    Scrapet de IMDb Parental Guide pagina en haalt de 'Sex & Nudity' categorie op.
-    """
     try:
         url = f"https://www.imdb.com/title/{imdb_id}/parentalguide"
         headers = {
@@ -201,7 +225,6 @@ uploaded_file = st.file_uploader("📤 Upload CSV-bestand", type=["csv"])
 
 if uploaded_file:
     try:
-        # CSV inladen
         try:
             df = pd.read_csv(uploaded_file)
         except UnicodeDecodeError:
@@ -230,10 +253,8 @@ if uploaded_file:
             st.session_state.last_imdb_ids = imdb_ids
             st.session_state.last_media_type = media_type
             
-            # Gebruik het nieuwe cloud-cachesysteem
             all_movies_data = get_cached_movie_data(imdb_ids)
             
-            # Filter op media type
             if media_type == "Alleen films":
                 st.session_state.all_data = [
                     item for item in all_movies_data if item[1].get("Type") == "movie"
@@ -297,7 +318,6 @@ if uploaded_file:
             else:
                 st.markdown("**🌟 Hoofdrolspelers:** Geen cast data")
 
-            # ⭐ IMDb + 🍅 Rotten Tomatoes
             st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
             st.markdown(f"**🍅 Rotten Tomatoes:** {extract_rotten_tomatoes_score(movie)}")
 
@@ -305,18 +325,14 @@ if uploaded_file:
             st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
             st.markdown(f"**🔞 Sex & Nudity:** {get_sex_nudity_rating(chosen_id)}")
 
-            # 🔗 IMDb pagina
             st.markdown(f"[⭐ IMDb](https://www.imdb.com/title/{chosen_id}/)")
 
-            # 🍅 Rotten Tomatoes pagina (via zoekopdracht)
             rt_query = f"{movie.get('Title', '')} {movie.get('Year', '')}"
             rt_url = f"https://www.rottentomatoes.com/search?search={requests.utils.quote(rt_query)}"
             st.markdown(f"[🍅 Rotten Tomatoes]({rt_url})")
 
-            # 📖 Verhaal
             st.markdown(f"**📖 Verhaal:** \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
 
-            # 🎥 Trailer
             if trailer_url:
                 st.video(trailer_url)
             else:
