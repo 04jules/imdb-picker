@@ -43,27 +43,35 @@ else:
 CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 dagen
 
 def get_movie_data_uncached(imdb_id):
-    """Haal film op van OMDb (Nederlands met Engelse fallback)"""
+    """Haal film op van OMDb (Engels voor volledige data + Nederlandse plot-patch)"""
     try:
-        url_nl = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full&language=nl"
-        response_nl = requests.get(url_nl, timeout=10)
-        response_nl.raise_for_status()
-        data_nl = response_nl.json()
+        # Stap 1: Haal altijd de volledige Engelse dataset op (gegarandeerde ratings, director, cast)
+        url_en = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full"
+        response_en = requests.get(url_en, timeout=10)
+        response_en.raise_for_status()
+        data_en = response_en.json()
         
-        if data_nl.get('Response') == 'True' and data_nl.get('Plot') and data_nl.get('Plot') != 'N/A':
-            return data_nl
-        else:
-            url_en = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full"
-            response_en = requests.get(url_en, timeout=10)
-            response_en.raise_for_status()
-            data_en = response_en.json()
-            return data_en if data_en.get('Response') == 'True' else {}
+        if data_en.get('Response') != 'True':
+            return {}
+            
+        # Stap 2: Probeer de Nederlandse vertaling van het plot op te halen en erin te patchen
+        try:
+            url_nl = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full&language=nl"
+            response_nl = requests.get(url_nl, timeout=10)
+            if response_nl.status_code == 200:
+                data_nl = response_nl.json()
+                if data_nl.get('Response') == 'True' and data_nl.get('Plot') and data_nl.get('Plot') != 'N/A':
+                    data_en['Plot'] = data_nl['Plot']
+        except Exception:
+            pass # Fallback naar Engelse beschrijving als NL niet beschikbaar is
+            
+        return data_en
     except Exception as e:
         print(f"OMDb Fetch Error voor {imdb_id}: {e}")
         return {}
 
 def get_cached_movie_data(imdb_ids):
-    """Haal films op uit de permanente Upstash Cloud Cache of van OMDb"""
+    """Haal films op uit cloud cache of OMDb met automatische herstelfunctie voor corrupte records"""
     movies_data = []
     new_movies_count = 0
     redis_errors = []
@@ -79,20 +87,24 @@ def get_cached_movie_data(imdb_ids):
                 try:
                     cached_data = redis.get(f"movie:{imdb_id}")
                     if cached_data:
-                        movie_data = json.loads(cached_data)
+                        potential_data = json.loads(cached_data)
+                        # AUTOMATISCHE HERSTELLER: Als de gecachte data geen ratings bevat (oude language=nl bug),
+                        # negeren we de cache zodat hij live compleet opnieuw wordt opgebouwd.
+                        if isinstance(potential_data, dict) and len(potential_data.get("Ratings", [])) > 0:
+                            movie_data = potential_data
                 except Exception as e:
                     error_msg = f"Leesfout voor {imdb_id}: {str(e)}"
                     if error_msg not in redis_errors:
                         redis_errors.append(error_msg)
 
-            # 2. Niet in de cache gevonden? Haal live op bij OMDb
+            # 2. Niet (of incompleet) in de cache gevonden? Haal live op bij OMDb
             if not movie_data:
                 movie_data = get_movie_data_uncached(imdb_id)
                 if movie_data and movie_data.get('Response') == 'True':
                     movies_data.append((imdb_id, movie_data))
                     new_movies_count += 1
                     
-                    # Sla het direct op in Upstash
+                    # Sla de gecorrigeerde, complete data op in Upstash
                     if use_redis:
                         try:
                             serialized_data = json.dumps(movie_data)
@@ -114,14 +126,14 @@ def get_cached_movie_data(imdb_ids):
             st.code(err)
         
     if new_movies_count > 0 and use_redis:
-        st.success(f"✅ {new_movies_count} nieuwe films succesvol toegevoegd aan de permanente cloud cache!")
+        st.success(f"✅ {new_movies_count} titels succesvol hersteld en vernieuwd in de cloud cache!")
     elif use_redis and not redis_errors:
         st.info("ℹ️ Alle films stonden al veilig in de cloud cache!")
         
     return movies_data
 
 # ------------------------------
-# 🔎 Extract IMDb IDs (CACHE VERWIJDERD OM STREAMLIT BLOKKADE TE OMZEILEN)
+# 🔎 Extract IMDb IDs
 # ------------------------------
 def extract_imdb_ids(df):
     imdb_ids = set()
@@ -140,9 +152,11 @@ def extract_imdb_ids(df):
 # 🍅 Rotten Tomatoes extractor
 # ------------------------------
 def extract_rotten_tomatoes_score(movie):
-    for rate in movie.get("Ratings", []):
-        if rate.get("Source") == "Rotten Tomatoes":
-            return rate.get("Value")
+    ratings = movie.get("Ratings")
+    if isinstance(ratings, list):
+        for rate in ratings:
+            if rate.get("Source") == "Rotten Tomatoes":
+                return rate.get("Value")
     return "N/A"
 
 # ------------------------------
@@ -161,7 +175,7 @@ def find_youtube_trailer(title, year):
     except:
         return None
     
-# 🔞 IMDb Parental Guide: Sex & Nudity (Slimme fix voor films én series via JSON + Regex fallbacks)
+# 🔞 IMDb Parental Guide: Sex & Nudity (Diepe regex-omzeiling voor gegarandeerde vangst)
 @st.cache_data(show_spinner=False, ttl=3600)
 def get_sex_nudity_rating(imdb_id):
     try:
@@ -174,29 +188,20 @@ def get_sex_nudity_rating(imdb_id):
         r.raise_for_status()
         html = r.text
 
-        # 1. Probeer via de ingebedde Next.js JSON boomstructuur
-        json_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-        if json_match:
-            data = json.loads(json_match.group(1))
-            queries = data.get("props", {}).get("pageProps", {}).get("aboveTheFoldData", {})
-            if not queries:
-                 queries = data.get("props", {}).get("pageProps", {}).get("mainColumnData", {})
+        # 1. Directe bliksem-regex in de rauwe ingebedde JSON-string (ongeacht hoe diep IMDb het nest)
+        raw_match1 = re.search(r'"advisoryCategory"\s*:\s*"SEX_AND_NUDITY".*?"text"\s*:\s*"([A-Za-z]+)"', html, re.DOTALL)
+        if raw_match1:
+            return raw_match1.group(1).strip().capitalize()
             
-            advisories = queries.get("parentsGuide", {}).get("advisories", {}).get("edges", [])
-            for edge in advisories:
-                node = edge.get("node", {})
-                if node.get("advisoryCategory") == "SEX_AND_NUDITY":
-                    severity = node.get("severity", {}).get("text")
-                    if severity:
-                        return severity.strip().capitalize()
+        raw_match2 = re.search(r'"id"\s*:\s*"SEX_AND_NUDITY".*?"severity"\s*:\s*"([A-Za-z]+)"', html, re.DOTALL)
+        if raw_match2:
+            return raw_match2.group(1).strip().capitalize()
 
-        # 2. Uitgebreide Regex fallbacks (scant de hele HTML-pagina op labels voor films/series)
+        # 2. Klassieke HTML element fallbacks
         patterns = [
             r'data-testid="advisory-severity-item-SEX_AND_NUDITY"[^>]*>\s*<span[^>]*>(Mild|Moderate|Severe|None)</span',
             r'Sex & Nudity</h4>[^>]*>\s*<span[^>]*>([^<]*)</span',
             r'Sex & Nudity</h4>[^>]*>([^<]*)</div',
-            r'id="advisory-sexAndNudity"[^>]*?(Mild|Moderate|Severe|None)',
-            r'Sex[^>]*Nudity[^>]*?(Mild|Moderate|Severe|None)',
         ]
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
@@ -205,14 +210,14 @@ def get_sex_nudity_rating(imdb_id):
                 if res in ['Mild', 'Moderate', 'Severe', 'None']:
                     return res
 
-        # 3. Specifieke check voor series die geen hoofd-label hebben maar wel een gevulde sectie
+        # 3. Check op tekstsectie (voor series/afleveringen zonder hoofd-label)
         if "Sex & Nudity" in html:
             sex_section = html.split("Sex & Nudity")[1][:1200]
             for level in ['Severe', 'Moderate', 'Mild', 'None']:
                 if level.lower() in sex_section.lower():
                     return level
 
-        return "None" # Als er echt niks te vinden is, is het meestal veilig/clean
+        return "Onbekend"
         
     except Exception:
         return "Onbekend"
@@ -221,7 +226,7 @@ def get_sex_nudity_rating(imdb_id):
 # 🚀 UI
 # ------------------------------
 st.title("🎬 IMDb Random Picker")
-st.markdown("Upload een CSV-bestand met IMDb ID's (zoals `tt1234567`). Werkt met watchlists of elke CSV met IDs.")
+st.markdown("Upload een CSV-bestand met IMDb ID's (zoals `tt1234567`).")
 
 with st.expander("📋 Voorbeeld CSV-formaat"):
     st.code("""Const,Title,Year\ntt0111161,The Shawshank Redemption,1994\ntt0068646,The Godfather,1972\ntt0071562,The Godfather Part II,1974""")
@@ -324,7 +329,6 @@ if uploaded_file:
             with col1:
                 poster = movie.get('Poster')
                 if poster and poster != "N/A":
-                    # GEFIXT: Gebruik de universele parameter die overal werkt
                     st.image(poster, use_column_width=True)
                 else:
                     st.warning("Geen poster beschikbaar")
@@ -334,7 +338,11 @@ if uploaded_file:
                 score_rt = extract_rotten_tomatoes_score(movie)
                 st.markdown(f"**⭐ IMDb:** `{score_imdb}/10` &nbsp;&nbsp;&nbsp;&nbsp; **🍅 Rotten Tomatoes:** `{score_rt}`")
                 
-                st.markdown(f"**🎬 Regisseur:** {movie.get('Director', 'Onbekend')}")
+                # Check of regisseur ingevuld is (bij series geeft OMDb vaak standaard 'N/A' omdat er per aflevering andere regisseurs zijn)
+                director = movie.get('Director', 'Onbekend')
+                if director == "N/A" or not director:
+                    director = "N/A (Meerdere regisseurs per aflevering)"
+                st.markdown(f"**🎬 Regisseur:** {director}")
                 
                 cast = movie.get('Actors', 'Onbekend')
                 if cast and cast != "N/A":
