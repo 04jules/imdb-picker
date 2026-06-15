@@ -8,6 +8,7 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 from io import StringIO
+from upstash_redis import Redis  # <-- NIEUW: Voor de permanente cloud cache
 
 try:
     from dotenv import load_dotenv
@@ -23,116 +24,82 @@ if not OMDB_API_KEY:
     st.stop()
 
 # ------------------------------
-# 🗂️ CACHE SYSTEEM
+# 🗂️ PERMANENTE CLOUD CACHE (Upstash Redis)
 # ------------------------------
-CACHE_FILE = "movie_cache.json"
-CACHE_TTL_DAYS = 30
+REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
-def get_cache_key(imdb_ids):
-    """Maak unieke key voor watchlist gebaseerd op IMDb IDs"""
-    sorted_ids = sorted(imdb_ids)
-    return hashlib.md5(''.join(sorted_ids).encode()).hexdigest()
+# Controleer of Upstash is ingesteld, anders vallen we veilig terug op GEEN cache
+if REDIS_URL and REDIS_TOKEN:
+    redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
+    use_redis = True
+else:
+    st.warning("⚠️ Upstash Redis variabelen niet gevonden. App draait zonder permanente cache.")
+    use_redis = False
 
-def load_cache():
-    """Laad cache van lokaal JSON bestand"""
+CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 dagen cacheverloop
+
+def get_movie_data_uncached(imdb_id):
+    """Haal film op van OMDb (Nederlands met Engelse fallback)"""
     try:
-        with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {
-            "cache_metadata": {
-                "version": "1.0",
-                "created": datetime.now().isoformat()
-            },
-            "individual_movies": {},
-            "watchlists": {}
-        }
-
-def save_cache(cache):
-    """Sla cache op in lokaal JSON bestand"""
-    try:
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"Cache save error: {e}")
-        return False
-
-def is_cache_valid(timestamp_str, ttl_days=CACHE_TTL_DAYS):
-    """Controleer of cache item nog geldig is"""
-    try:
-        timestamp = datetime.fromisoformat(timestamp_str)
-        expiry_date = timestamp + timedelta(days=ttl_days)
-        return datetime.now() < expiry_date
+        url_nl = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full&language=nl"
+        response_nl = requests.get(url_nl, timeout=10)
+        response_nl.raise_for_status()
+        data_nl = response_nl.json()
+        
+        if data_nl.get('Response') == 'True' and data_nl.get('Plot') and data_nl.get('Plot') != 'N/A':
+            return data_nl
+        else:
+            url_en = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full"
+            response_en = requests.get(url_en, timeout=10)
+            response_en.raise_for_status()
+            data_en = response_en.json()
+            return data_en if data_en.get('Response') == 'True' else {}
     except:
-        return False
+        return {}
 
 def get_cached_movie_data(imdb_ids):
-    """Haal films op uit cache of van OMDb API"""
-    cache = load_cache()
-    cache_key = get_cache_key(imdb_ids)
-    
-    # Check of complete watchlist gecached is en nog geldig
-    if cache_key in cache.get("watchlists", {}):
-        watchlist_data = cache["watchlists"][cache_key]
-        if is_cache_valid(watchlist_data.get("created", "")):
-            st.info("📁 Watchlist geladen uit cache")
-            return watchlist_data["movies_data"]
-        else:
-            # 🔥 CRITIEKE FIX: Verwijder expired watchlist uit cache
-            del cache["watchlists"][cache_key]
-            save_cache(cache)
-            st.info("🔄 Cache verlopen, nieuwe data ophalen...")
-    
-    # Nieuwe films ophalen
+    """Haal films op uit de permanente Upstash Cloud Cache of van OMDb"""
     movies_data = []
     new_movies_count = 0
     
-    with st.spinner("Films ophalen (cache systeem)..."):
+    with st.spinner("Films ophalen via permanente Cloud Cache..."):
         progress = st.progress(0)
         
         for i, imdb_id in enumerate(imdb_ids):
-            # Check individuele film cache
-            cached_movie = cache.get("individual_movies", {}).get(imdb_id)
-            if cached_movie and is_cache_valid(cached_movie.get("last_fetched", "")):
-                movies_data.append((imdb_id, cached_movie["data"]))
-            else:
-                # Nieuwe film ophalen van OMDb
+            movie_data = None
+            
+            # 1. Probeer eerst uit Upstash Redis te halen
+            if use_redis:
+                try:
+                    cached_data = redis.get(f"movie:{imdb_id}")
+                    if cached_data:
+                        movie_data = json.loads(cached_data)
+                except Exception as e:
+                    print(f"Redis read error: {e}")
+
+            # 2. Niet in de cache gevonden? Haal live op bij OMDb
+            if not movie_data:
                 movie_data = get_movie_data_uncached(imdb_id)
                 if movie_data:
-                    movies_data.append((imdb_id, movie_data))
                     new_movies_count += 1
-                    
-                    # Update individuele cache
-                    if "individual_movies" not in cache:
-                        cache["individual_movies"] = {}
-                    cache["individual_movies"][imdb_id] = {
-                        "data": movie_data,
-                        "last_fetched": datetime.now().isoformat(),
-                        "ttl_days": CACHE_TTL_DAYS
-                    }
-            
+                    # Sla het direct op in Upstash voor toekomstig gebruik
+                    if use_redis:
+                        try:
+                            redis.set(f"movie:{imdb_id}", json.dumps(movie_data), ex=CACHE_TTL_SECONDS)
+                        except Exception as e:
+                            print(f"Redis write error: {e}")
+
+            if movie_data:
+                movies_data.append((imdb_id, movie_data))
+                
             progress.progress((i + 1) / len(imdb_ids))
-        
+            
         progress.empty()
-    
-    # Sla complete watchlist op
-    if "watchlists" not in cache:
-        cache["watchlists"] = {}
-    
-    cache["watchlists"][cache_key] = {
-        "imdb_ids": imdb_ids,
-        "movies_data": movies_data,
-        "created": datetime.now().isoformat(),
-        "movie_count": len(movies_data),
-        "new_movies_added": new_movies_count
-    }
-    
-    save_cache(cache)
-    
-    if new_movies_count > 0:
-        st.success(f"✅ {new_movies_count} nieuwe films toegevoegd aan cache")
-    
+        
+    if new_movies_count > 0 and use_redis:
+        st.success(f"✅ {new_movies_count} nieuwe films toegevoegd aan permanente cloud cache!")
+        
     return movies_data
 
 # ------------------------------
@@ -151,29 +118,6 @@ def extract_imdb_ids(df):
         except:
             continue
     return list(imdb_ids)
-
-# ------------------------------
-# 🎬 Fetch OMDb data (zonder cache)
-# ------------------------------
-def get_movie_data_uncached(imdb_id):
-    try:
-        # Eerst proberen in het Nederlands
-        url_nl = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full&language=nl"
-        response_nl = requests.get(url_nl, timeout=10)
-        response_nl.raise_for_status()
-        data_nl = response_nl.json()
-        
-        if data_nl.get('Response') == 'True' and data_nl.get('Plot') and data_nl.get('Plot') != 'N/A':
-            return data_nl
-        else:
-            # Fallback naar Engels
-            url_en = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}&plot=full"
-            response_en = requests.get(url_en, timeout=10)
-            response_en.raise_for_status()
-            data_en = response_en.json()
-            return data_en if data_en.get('Response') == 'True' else {}
-    except:
-        return {}
 
 # ------------------------------
 # 🍅 Rotten Tomatoes extractor
@@ -205,11 +149,6 @@ def find_youtube_trailer(title, year):
 def get_sex_nudity_rating(imdb_id):
     """
     Scrapet de IMDb Parental Guide pagina en haalt de 'Sex & Nudity' categorie op.
-    Mogelijke waarden:
-        - None
-        - Mild
-        - Moderate
-        - Severe
     """
     try:
         url = f"https://www.imdb.com/title/{imdb_id}/parentalguide"
@@ -222,15 +161,10 @@ def get_sex_nudity_rating(imdb_id):
         r.raise_for_status()
         html = r.text
 
-        # Verbeterde regex patterns voor verschillende IMDb layouts
         patterns = [
-            # Nieuwe IMDb layout met data-testid
             r'data-testid="advisory-severity-item-SEX_AND_NUDITY"[^>]*>\s*<span[^>]*>(Mild|Moderate|Severe|None)</span',
-            # Alternatieve layout
             r'Sex & Nudity</h4>[^>]*>([^<]*)</div',
-            # Oudere layout
             r'<h4>Sex & Nudity</h4>\s*<div[^>]*>\s*([^<]+)\s*</div',
-            # Fallback: zoek naar seks & nudity ergens in de section
             r'Sex[^>]*Nudity[^>]*?(Mild|Moderate|Severe|None)',
         ]
 
@@ -241,9 +175,7 @@ def get_sex_nudity_rating(imdb_id):
                 if rating in ['Mild', 'Moderate', 'Severe', 'None']:
                     return rating
 
-        # Als we niets vinden met regex, proberen we een andere aanpak
         if "Sex & Nudity" in html:
-            # Kijk of we de rating kunnen vinden in de buurt van de sectie
             sex_section = html.split("Sex & Nudity")[1][:1000] if "Sex & Nudity" in html else ""
             for level in ['Severe', 'Moderate', 'Mild', 'None']:
                 if level.lower() in sex_section.lower():
@@ -285,7 +217,7 @@ if uploaded_file:
         st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        # ---------- Data ophalen MET CACHE ----------
+        # ---------- Data ophalen MET PERMANENTE CACHE ----------
         rebuild = False
         if "all_data" not in st.session_state:
             rebuild = True
@@ -298,7 +230,7 @@ if uploaded_file:
             st.session_state.last_imdb_ids = imdb_ids
             st.session_state.last_media_type = media_type
             
-            # Gebruik cache systeem
+            # Gebruik het nieuwe cloud-cachesysteem
             all_movies_data = get_cached_movie_data(imdb_ids)
             
             # Filter op media type
@@ -326,7 +258,6 @@ if uploaded_file:
             if st.session_state.available_indices:
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
             else:
-                # Reset als alle films zijn getoond
                 st.session_state.available_indices = list(range(len(st.session_state.all_data)))
                 random.shuffle(st.session_state.available_indices)
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
@@ -335,7 +266,6 @@ if uploaded_file:
             if st.session_state.available_indices:
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
             else:
-                # Reset en shuffle opnieuw als alle films zijn getoond
                 st.session_state.available_indices = list(range(len(st.session_state.all_data)))
                 random.shuffle(st.session_state.available_indices)
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
@@ -369,13 +299,11 @@ if uploaded_file:
 
             # ⭐ IMDb + 🍅 Rotten Tomatoes
             st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
-            rt_score = extract_rotten_tomatoes_score(movie)
-            st.markdown(f"**🍅 Rotten Tomatoes:** {rt_score}")
+            st.markdown(f"**🍅 Rotten Tomatoes:** {extract_rotten_tomatoes_score(movie)}")
 
             st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
             st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
-            sex_rating = get_sex_nudity_rating(chosen_id)
-            st.markdown(f"**🔞 Sex & Nudity:** {sex_rating}")
+            st.markdown(f"**🔞 Sex & Nudity:** {get_sex_nudity_rating(chosen_id)}")
 
             # 🔗 IMDb pagina
             st.markdown(f"[⭐ IMDb](https://www.imdb.com/title/{chosen_id}/)")
@@ -385,10 +313,10 @@ if uploaded_file:
             rt_url = f"https://www.rottentomatoes.com/search?search={requests.utils.quote(rt_query)}"
             st.markdown(f"[🍅 Rotten Tomatoes]({rt_url})")
 
-            # 📖 Verhaal (NU BOVEN de trailer)
-            st.markdown(f"**📖 Verhaal:**  \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
+            # 📖 Verhaal
+            st.markdown(f"**📖 Verhaal:** \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
 
-            # 🎥 Trailer (NU ONDER het verhaal)
+            # 🎥 Trailer
             if trailer_url:
                 st.video(trailer_url)
             else:
