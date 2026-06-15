@@ -95,16 +95,12 @@ def get_cached_movie_data(imdb_ids):
                     # Sla het direct op in Upstash
                     if use_redis:
                         try:
-                            # forceer string conversie om type-fouten in Upstash te voorkomen
                             serialized_data = json.dumps(movie_data)
                             redis.set(f"movie:{imdb_id}", serialized_data, ex=CACHE_TTL_SECONDS)
                         except Exception as e:
                             error_msg = f"Schrijffout voor {imdb_id}: {str(e)}"
                             if error_msg not in redis_errors:
                                 redis_errors.append(error_msg)
-                else:
-                    # Mocht OMDb de film echt niet kennen
-                    pass
             else:
                 movies_data.append((imdb_id, movie_data))
                 
@@ -112,32 +108,26 @@ def get_cached_movie_data(imdb_ids):
             
         progress.empty()
         
-    # Toon eventuele databasefouten direct in de UI zodat we kunnen debuggen!
     if redis_errors:
         st.error("⚠️ Er ging iets mis met de Upstash Cloud Cache verbinding:")
-        for err in redis_errors[:5]:  # Toon maximaal 5 fouten
+        for err in redis_errors[:5]:
             st.code(err)
-        if len(redis_errors) > 5:
-            st.caption(f"...en nog {len(redis_errors) - 5} andere databasefouten.")
         
     if new_movies_count > 0 and use_redis:
-        st.success(f"✅ {new_movies_count} nieuwe films toegevoegd aan permanente cloud cache!")
+        st.success(f"✅ {new_movies_count} nieuwe films succesvol toegevoegd aan de permanente cloud cache!")
     elif use_redis and not redis_errors:
         st.info("ℹ️ Alle films stonden al veilig in de cloud cache!")
         
     return movies_data
 
 # ------------------------------
-# 🔎 Extract IMDb IDs (Gecorrigeerd voor alle lengtes)
+# 🔎 Extract IMDb IDs (CACHE VERWIJDERD OM STREAMLIT BLOKKADE TE OMZEILEN)
 # ------------------------------
-@st.cache_data(show_spinner=False)
 def extract_imdb_ids(df):
     imdb_ids = set()
-    # Scant nu heel specifiek op 'tt' met 7 tot 10 cijfers erachter
     pattern = re.compile(r'(tt\d{7,10})')
     for col in df.columns:
         try:
-            # We zetten de hele kolom om naar tekst en zoeken alle matches
             for cell in df[col].astype(str):
                 matches = pattern.findall(cell)
                 for match in matches:
@@ -171,7 +161,7 @@ def find_youtube_trailer(title, year):
     except:
         return None
     
-# 🔞 IMDb Parental Guide: Sex & Nudity
+# 🔞 IMDb Parental Guide: Sex & Nudity (Hier mag cache wel blijven want dit is op ID-niveau)
 @st.cache_data(show_spinner=False, ttl=3600)
 def get_sex_nudity_rating(imdb_id):
     try:
@@ -240,7 +230,7 @@ if uploaded_file:
         st.success(f"✅ {len(imdb_ids)} unieke IMDb ID's gevonden in het bestand!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
-        # ---------- Data ophalen MET PERMANENTE CACHE ----------
+        # ---------- Data ophalen ----------
         rebuild = False
         if "all_data" not in st.session_state:
             rebuild = True
