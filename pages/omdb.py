@@ -161,46 +161,52 @@ def find_youtube_trailer(title, year):
     except:
         return None
     
-# 🔞 IMDb Parental Guide: Sex & Nudity (Hier mag cache wel blijven want dit is op ID-niveau)
+# 🔞 IMDb Parental Guide: Sex & Nudity (Vaste fix via __NEXT_DATA__ JSON extractie)
 @st.cache_data(show_spinner=False, ttl=3600)
 def get_sex_nudity_rating(imdb_id):
     try:
         url = f"https://www.imdb.com/title/{imdb_id}/parentalguide"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
         }
         r = requests.get(url, headers=headers, timeout=12)
         r.raise_for_status()
         html = r.text
 
+        # Zoek naar de ingebedde Next.js JSON data van de moderne IMDb pagina
+        json_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+        if json_match:
+            data = json.loads(json_match.group(1))
+            # Doorzoek de JSON-boom naar de advisories
+            queries = data.get("props", {}).get("pageProps", {}).get("aboveTheFoldData", {})
+            if not queries:
+                 queries = data.get("props", {}).get("pageProps", {}).get("mainColumnData", {})
+            
+            # Fallback check voor alternatieve boomstructuren van IMDb
+            advisories = queries.get("parentsGuide", {}).get("advisories", {}).get("edges", [])
+            for edge in advisories:
+                node = edge.get("node", {})
+                if node.get("advisoryCategory") == "SEX_AND_NUDITY":
+                    severity = node.get("severity", {}).get("text")
+                    if severity:
+                        return severity.strip().capitalize()
+
+        # Fallback op de klassieke regex mocht JSON ontbreken of veranderen
         patterns = [
             r'data-testid="advisory-severity-item-SEX_AND_NUDITY"[^>]*>\s*<span[^>]*>(Mild|Moderate|Severe|None)</span',
             r'Sex & Nudity</h4>[^>]*>([^<]*)</div',
-            r'<h4>Sex & Nudity</h4>\s*<div[^>]*>\s*([^<]+)\s*</div',
             r'Sex[^>]*Nudity[^>]*?(Mild|Moderate|Severe|None)',
         ]
-
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
             if match:
-                rating = match.group(1).strip().capitalize()
-                if rating in ['Mild', 'Moderate', 'Severe', 'None']:
-                    return rating
-
-        if "Sex & Nudity" in html:
-            sex_section = html.split("Sex & Nudity")[1][:1000] if "Sex & Nudity" in html else ""
-            for level in ['Severe', 'Moderate', 'Mild', 'None']:
-                if level.lower() in sex_section.lower():
-                    return level
+                return match.group(1).strip().capitalize()
 
         return "Onbekend"
         
-    except requests.RequestException:
-        return "Onbekend (timeout)"
-    except Exception as e:
-        return f"Onbekend (error: {str(e)})"
+    except Exception:
+        return "Onbekend"
 
 # ------------------------------
 # 🚀 UI
@@ -264,7 +270,6 @@ if uploaded_file:
         if "available_indices" not in st.session_state:
             st.session_state.available_indices = list(range(len(st.session_state.all_data)))
             random.shuffle(st.session_state.available_indices)
-            # Schiet ballonnen af bij de allereerste succesvolle upload van de lijst!
             st.balloons()
         
         if "last_selected_idx" not in st.session_state:
@@ -282,55 +287,70 @@ if uploaded_file:
                 st.session_state.available_indices = list(range(len(st.session_state.all_data)))
                 random.shuffle(st.session_state.available_indices)
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
-            # Schiet een vrolijke lading ballonnen af bij elke handmatige klik!
             st.balloons()
 
         chosen_id, movie = st.session_state.all_data[st.session_state.last_selected_idx]
-
         trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
 
-        # ---------- UI ----------
-        st.subheader(f"{movie.get('Title', 'Onbekende titel')} ({movie.get('Year', '?')})")
+        # ---------- MODERN CARD ONTWERP (Optie 3) ----------
+        st.markdown("---")
+        
+        # Generieke metadata variabelen vullen
+        m_type = movie.get('Type', 'movie').capitalize()
+        m_year = movie.get('Year', '?')
+        m_runtime = movie.get('Runtime', 'Onbekend')
+        m_genre = movie.get('Genre', 'Onbekend')
+        m_nudity = get_sex_nudity_rating(chosen_id)
+        
+        # De hoofd-container fungeert als de visuele "Card"
+        with st.container(border=True):
+            st.subheader(f"🍿 {movie.get('Title', 'Onbekende titel')}")
+            
+            # Horizontale badges-balk voor een strakke visuele hiërarchie
+            st.markdown(
+                f"` {m_type} ` | ` 📅 {m_year} ` | ` ⏳ {m_runtime} ` | ` 🎭 {m_genre} ` | ` 🔞 Nudity: {m_nudity} `"
+            )
+            st.write("") # Witregel voor ademruimte
+            
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                poster = movie.get('Poster')
+                if poster and poster != "N/A":
+                    st.image(poster, use_container_width=True)
+                else:
+                    st.warning("Geen poster beschikbaar")
+                    
+            with col2:
+                # Blok met de scores overzichtelijk gecentreerd
+                score_imdb = movie.get('imdbRating', 'N/A')
+                score_rt = extract_rotten_tomatoes_score(movie)
+                st.markdown(f"**⭐ IMDb:** `{score_imdb}/10` &nbsp;&nbsp;&nbsp;&nbsp; **🍅 Rotten Tomatoes:** `{score_rt}`")
+                
+                st.markdown(f"**🎬 Regisseur:** {movie.get('Director', 'Onbekend')}")
+                
+                cast = movie.get('Actors', 'Onbekend')
+                if cast and cast != "N/A":
+                    st.markdown(f"**🌟 Cast:** {cast}")
+                
+                st.markdown("**📖 Verhaal:**")
+                st.write(movie.get('Plot', 'Geen beschrijving beschikbaar'))
+                
+                # Links knoppen-balk
+                rt_query = f"{movie.get('Title', '')} {movie.get('Year', '')}"
+                rt_url = f"https://www.rottentomatoes.com/search?search={requests.utils.quote(rt_query)}"
+                
+                st.markdown(
+                    f"[🔗 Open op IMDb](https://www.imdb.com/title/{chosen_id}/) &nbsp;|&nbsp; [🔗 Open op Rotten Tomatoes]({rt_url})"
+                )
 
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            poster = movie.get('Poster')
-            if poster and poster != "N/A":
-                st.image(poster, width=200)
-            else:
-                st.warning("Geen poster beschikbaar")
-
-        with col2:
-            st.markdown(f"**🎞️ Type:** {movie.get('Type', 'Onbekend').capitalize()}")
-            st.markdown(f"**🎬 Regisseur:** {movie.get('Director', 'Onbekend')}")
-
-            cast = movie.get('Actors', 'Onbekend')
-            if cast and cast != "N/A":
-                st.markdown("**🌟 Hoofdrolspelers:**")
-                for actor in cast.split(','):
-                    st.markdown(f"- {actor.strip()}")
-            else:
-                st.markdown("**🌟 Hoofdrolspelers:** Geen cast data")
-
-            st.markdown(f"**⭐ IMDb Rating:** {movie.get('imdbRating', 'N/A')}")
-            st.markdown(f"**🍅 Rotten Tomatoes:** {extract_rotten_tomatoes_score(movie)}")
-
-            st.markdown(f"**⏳ Looptijd:** {movie.get('Runtime', 'Onbekend')}")
-            st.markdown(f"**🎭 Genre:** {movie.get('Genre', 'Onbekend')}")
-            st.markdown(f"**🔞 Sex & Nudity:** {get_sex_nudity_rating(chosen_id)}")
-
-            st.markdown(f"[⭐ IMDb](https://www.imdb.com/title/{chosen_id}/)")
-
-            rt_query = f"{movie.get('Title', '')} {movie.get('Year', '')}"
-            rt_url = f"https://www.rottentomatoes.com/search?search={requests.utils.quote(rt_query)}"
-            st.markdown(f"[🍅 Rotten Tomatoes]({rt_url})")
-
-            st.markdown(f"**📖 Verhaal:** \n{movie.get('Plot', 'Geen beschrijving beschikbaar')}")
-
-            if trailer_url:
-                st.video(trailer_url)
-            else:
-                st.warning("Geen trailer gevonden")
+        # Trailer buiten de card plaatsen voor optimale breedte en rust in de layout
+        if trailer_url:
+            st.write("")
+            st.markdown("**📺 Officiële Trailer:**")
+            st.video(trailer_url)
+        else:
+            st.warning("Geen trailer gevonden")
 
     except Exception as e:
         st.error(f"❌ Fout bij verwerken bestand: {str(e)}")
