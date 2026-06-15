@@ -200,8 +200,8 @@ def get_sex_nudity_rating(imdb_id):
         # 2. Klassieke HTML element fallbacks
         patterns = [
             r'data-testid="advisory-severity-item-SEX_AND_NUDITY"[^>]*>\s*<span[^>]*>(Mild|Moderate|Severe|None)</span',
-            r'Sex & Nudity</h4>[^>]*>\s*<span[^>]*>([^<]*)</span',
-            r'Sex & Nudity</h4>[^>]*>([^<]*)</div',
+            r'Sex & Nudity</h4>[^>]*>\s*<span[^>]*>(.*?)</span',
+            r'Sex & Nudity</h4>[^>]*>(.*?)</div',
         ]
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
@@ -275,6 +275,13 @@ if uploaded_file:
                 ]
             else:
                 st.session_state.all_data = all_movies_data
+
+            # CRUCIALE BUGFIX: Verwijder de oude kaartenbak direct bij een filter- of datawijziging
+            # Hierdoor matched de willekeurige selectie ALTIJD met de nieuwe lengte van de lijst!
+            if "available_indices" in st.session_state:
+                del st.session_state.available_indices
+            if "last_selected_idx" in st.session_state:
+                del st.session_state.last_selected_idx
 
         if not st.session_state.all_data:
             st.warning("⚠️ Geen titels gevonden met dat type.")
