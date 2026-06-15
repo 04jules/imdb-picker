@@ -8,7 +8,7 @@ import json
 import hashlib
 from datetime import datetime, timedelta
 from io import StringIO
-from upstash_redis import Redis  # <-- NIEUW: Voor de permanente cloud cache
+from upstash_redis import Redis
 
 try:
     from dotenv import load_dotenv
@@ -29,7 +29,6 @@ if not OMDB_API_KEY:
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
-# Controleer of Upstash is ingesteld, anders vallen we veilig terug op GEEN cache
 if REDIS_URL and REDIS_TOKEN:
     redis = Redis(url=REDIS_URL, token=REDIS_TOKEN)
     use_redis = True
@@ -103,12 +102,13 @@ def get_cached_movie_data(imdb_ids):
     return movies_data
 
 # ------------------------------
-# 🔎 Extract IMDb IDs
+# 🔎 Extract IMDb IDs (GEFIXED VOOR RECENTE IMDB ID LENGTHS)
 # ------------------------------
 @st.cache_data(show_spinner=False)
 def extract_imdb_ids(df):
     imdb_ids = set()
-    pattern = re.compile(r'(tt\d{7,8})')
+    # \d{7,10} zorgt ervoor dat ID's van 7, 8, 9 én 10 cijfers lang nu volledig worden herkend!
+    pattern = re.compile(r'(tt\d{7,10})')
     for col in df.columns:
         try:
             matches = df[col].astype(str).str.extractall(pattern)[0].unique()
@@ -214,7 +214,7 @@ if uploaded_file:
             st.warning("⚠️ Geen IMDb ID's gevonden.")
             st.stop()
 
-        st.success(f"✅ {len(imdb_ids)} IMDb ID's gevonden!")
+        st.success(f"✅ {len(imdb_ids)} unieke IMDb ID's gevonden in het bestand!")
         media_type = st.selectbox("📺 Wat wil je kijken?", ["Alles", "Alleen films", "Alleen series"])
 
         # ---------- Data ophalen MET PERMANENTE CACHE ----------
