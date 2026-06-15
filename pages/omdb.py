@@ -264,6 +264,8 @@ if uploaded_file:
         if "available_indices" not in st.session_state:
             st.session_state.available_indices = list(range(len(st.session_state.all_data)))
             random.shuffle(st.session_state.available_indices)
+            # Schiet ballonnen af bij de allereerste succesvolle upload van de lijst!
+            st.balloons()
         
         if "last_selected_idx" not in st.session_state:
             if st.session_state.available_indices:
@@ -280,6 +282,8 @@ if uploaded_file:
                 st.session_state.available_indices = list(range(len(st.session_state.all_data)))
                 random.shuffle(st.session_state.available_indices)
                 st.session_state.last_selected_idx = st.session_state.available_indices.pop()
+            # Schiet een vrolijke lading ballonnen af bij elke handmatige klik!
+            st.balloons()
 
         chosen_id, movie = st.session_state.all_data[st.session_state.last_selected_idx]
 
