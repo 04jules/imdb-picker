@@ -161,7 +161,7 @@ def find_youtube_trailer(title, year):
     except:
         return None
     
-# 🔞 IMDb Parental Guide: Sex & Nudity (Vaste fix via __NEXT_DATA__ JSON extractie)
+# 🔞 IMDb Parental Guide: Sex & Nudity (Slimme fix voor films én series via JSON + Regex fallbacks)
 @st.cache_data(show_spinner=False, ttl=3600)
 def get_sex_nudity_rating(imdb_id):
     try:
@@ -174,16 +174,14 @@ def get_sex_nudity_rating(imdb_id):
         r.raise_for_status()
         html = r.text
 
-        # Zoek naar de ingebedde Next.js JSON data van de moderne IMDb pagina
+        # 1. Probeer via de ingebedde Next.js JSON boomstructuur
         json_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if json_match:
             data = json.loads(json_match.group(1))
-            # Doorzoek de JSON-boom naar de advisories
             queries = data.get("props", {}).get("pageProps", {}).get("aboveTheFoldData", {})
             if not queries:
                  queries = data.get("props", {}).get("pageProps", {}).get("mainColumnData", {})
             
-            # Fallback check voor alternatieve boomstructuren van IMDb
             advisories = queries.get("parentsGuide", {}).get("advisories", {}).get("edges", [])
             for edge in advisories:
                 node = edge.get("node", {})
@@ -192,18 +190,29 @@ def get_sex_nudity_rating(imdb_id):
                     if severity:
                         return severity.strip().capitalize()
 
-        # Fallback op de klassieke regex mocht JSON ontbreken of veranderen
+        # 2. Uitgebreide Regex fallbacks (scant de hele HTML-pagina op labels voor films/series)
         patterns = [
             r'data-testid="advisory-severity-item-SEX_AND_NUDITY"[^>]*>\s*<span[^>]*>(Mild|Moderate|Severe|None)</span',
+            r'Sex & Nudity</h4>[^>]*>\s*<span[^>]*>([^<]*)</span',
             r'Sex & Nudity</h4>[^>]*>([^<]*)</div',
+            r'id="advisory-sexAndNudity"[^>]*?(Mild|Moderate|Severe|None)',
             r'Sex[^>]*Nudity[^>]*?(Mild|Moderate|Severe|None)',
         ]
         for pattern in patterns:
             match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
             if match:
-                return match.group(1).strip().capitalize()
+                res = match.group(1).strip().capitalize()
+                if res in ['Mild', 'Moderate', 'Severe', 'None']:
+                    return res
 
-        return "Onbekend"
+        # 3. Specifieke check voor series die geen hoofd-label hebben maar wel een gevulde sectie
+        if "Sex & Nudity" in html:
+            sex_section = html.split("Sex & Nudity")[1][:1200]
+            for level in ['Severe', 'Moderate', 'Mild', 'None']:
+                if level.lower() in sex_section.lower():
+                    return level
+
+        return "None" # Als er echt niks te vinden is, is het meestal veilig/clean
         
     except Exception:
         return "Onbekend"
@@ -292,37 +301,35 @@ if uploaded_file:
         chosen_id, movie = st.session_state.all_data[st.session_state.last_selected_idx]
         trailer_url = find_youtube_trailer(movie.get('Title'), movie.get('Year'))
 
-        # ---------- MODERN CARD ONTWERP (Optie 3) ----------
+        # ---------- MODERN CARD ONTWERP ----------
         st.markdown("---")
         
-        # Generieke metadata variabelen vullen
         m_type = movie.get('Type', 'movie').capitalize()
         m_year = movie.get('Year', '?')
         m_runtime = movie.get('Runtime', 'Onbekend')
         m_genre = movie.get('Genre', 'Onbekend')
         m_nudity = get_sex_nudity_rating(chosen_id)
         
-        # De hoofd-container fungeert als de visuele "Card"
         with st.container(border=True):
             st.subheader(f"🍿 {movie.get('Title', 'Onbekende titel')}")
             
-            # Horizontale badges-balk voor een strakke visuele hiërarchie
+            # Badges-balk
             st.markdown(
                 f"` {m_type} ` | ` 📅 {m_year} ` | ` ⏳ {m_runtime} ` | ` 🎭 {m_genre} ` | ` 🔞 Nudity: {m_nudity} `"
             )
-            st.write("") # Witregel voor ademruimte
+            st.write("") 
             
             col1, col2 = st.columns([1, 2])
             
             with col1:
                 poster = movie.get('Poster')
                 if poster and poster != "N/A":
-                    st.image(poster, use_container_width=True)
+                    # GEFIXT: Gebruik de universele parameter die overal werkt
+                    st.image(poster, use_column_width=True)
                 else:
                     st.warning("Geen poster beschikbaar")
                     
             with col2:
-                # Blok met de scores overzichtelijk gecentreerd
                 score_imdb = movie.get('imdbRating', 'N/A')
                 score_rt = extract_rotten_tomatoes_score(movie)
                 st.markdown(f"**⭐ IMDb:** `{score_imdb}/10` &nbsp;&nbsp;&nbsp;&nbsp; **🍅 Rotten Tomatoes:** `{score_rt}`")
@@ -336,7 +343,6 @@ if uploaded_file:
                 st.markdown("**📖 Verhaal:**")
                 st.write(movie.get('Plot', 'Geen beschrijving beschikbaar'))
                 
-                # Links knoppen-balk
                 rt_query = f"{movie.get('Title', '')} {movie.get('Year', '')}"
                 rt_url = f"https://www.rottentomatoes.com/search?search={requests.utils.quote(rt_query)}"
                 
@@ -344,7 +350,6 @@ if uploaded_file:
                     f"[🔗 Open op IMDb](https://www.imdb.com/title/{chosen_id}/) &nbsp;|&nbsp; [🔗 Open op Rotten Tomatoes]({rt_url})"
                 )
 
-        # Trailer buiten de card plaatsen voor optimale breedte en rust in de layout
         if trailer_url:
             st.write("")
             st.markdown("**📺 Officiële Trailer:**")
